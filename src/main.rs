@@ -9,20 +9,25 @@
 
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
+#![feature(async_closure)]
 
 use core::borrow::BorrowMut;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_time::{Duration, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
+    dma::{Dma, DmaPriority},
+    dma_buffers, dma_descriptors,
     gpio::{any_pin::AnyPin, GpioPin, Io, Level, Output},
     peripherals::Peripherals,
     prelude::*,
     rmt::Rmt,
     rng::Rng,
+    spi::{master::Spi, SpiMode},
     system::SystemControl,
     timer::{ErasedTimer, OneShotTimer, PeriodicTimer},
 };
@@ -32,7 +37,12 @@ use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
     initialize, EspWifiInitFor,
 };
-use smart_leds::colors;
+use smart_leds::{
+    colors,
+    hsv::{hsv2rgb, Hsv},
+    RGB, RGB8,
+};
+use static_cell::make_static;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -43,18 +53,6 @@ macro_rules! mk_static {
     }};
 }
 
-#[embassy_executor::task]
-async fn blink(mut leds: SmartLedsAdapter<esp_hal::rmt::Channel<esp_hal::Blocking, 0>, 25>) {
-    loop {
-        use smart_leds::SmartLedsWrite as _;
-        // THIS WORKS but colors are _basically_ white
-        _ = leds.write([colors::BLACK]);
-        Timer::after_millis(150).await;
-        // _ = leds.write([colors::ROSY_BROWN]);
-        Timer::after_millis(150).await;
-    }
-}
-
 #[main]
 async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
@@ -63,13 +61,23 @@ async fn main(spawner: Spawner) -> ! {
     let system = SystemControl::new(peripherals.SYSTEM);
 
     let clocks = ClockControl::max(system.clock_control).freeze();
-
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let rmt = Rmt::new(peripherals.RMT, 80.MHz(), &clocks, None).unwrap();
 
-    let rmt_buffer = smartLedBuffer!(1);
-    let led = SmartLedsAdapter::new(rmt.channel0, io.pins.gpio27, rmt_buffer, &clocks);
-    spawner.must_spawn(blink(led));
+    let dma = Dma::new(peripherals.DMA);
+    let dma_channel = dma.spi2channel;
+    let (tx_buffer, tx_descriptors, rx_buffer, rx_descriptors) = dma_buffers!(32000);
+
+    use esp_hal::spi::master::prelude::*;
+    let mut spi = Spi::new(peripherals.SPI2, 3u32.MHz(), SpiMode::Mode0, &clocks)
+        .with_mosi(io.pins.gpio27)
+        .with_dma(
+            dma_channel.configure_for_async(false, DmaPriority::Priority0),
+            tx_descriptors,
+            rx_descriptors,
+        );
+
+    const N_LEDS: usize = 100;
+    let mut ws = ws2812_async::Ws2812::<_, { 12 * N_LEDS }>::new(spi);
 
     let timer = PeriodicTimer::new(
         esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0, &clocks, None)
@@ -115,34 +123,56 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let mut ticker = Ticker::every(Duration::from_secs(5));
+    let mut ticker2 = Ticker::every(Duration::from_secs(5));
+    let mut led_ticker = Ticker::every(Duration::from_millis(33));
+    let mut led_colors = [Hsv {
+        hue: 0,
+        val: 255,
+        sat: 255,
+    }; N_LEDS];
+    let mut rbg_leds = [RGB8::default(); N_LEDS];
     loop {
-        let res = select(ticker.next(), async {
-            let r = esp_now.receive_async().await;
-            println!("Received {:?}", r);
-            if r.info.dst_address == BROADCAST_ADDRESS {
-                if !esp_now.peer_exists(&r.info.src_address) {
-                    esp_now
-                        .add_peer(PeerInfo {
-                            peer_address: r.info.src_address,
-                            lmk: None,
-                            channel: None,
-                            encrypt: false,
-                        })
-                        .unwrap();
-                }
-                let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
-                println!("Send hello to peer status: {:?}", status);
-            }
-        })
+        let res = select3(
+            ticker.next(),
+            // async {
+            //     let r = esp_now.receive_async().await;
+            //     println!("Received {:?}", r);
+            //     if r.info.dst_address == BROADCAST_ADDRESS {
+            //         if !esp_now.peer_exists(&r.info.src_address) {
+            //             esp_now
+            //                 .add_peer(PeerInfo {
+            //                     peer_address: r.info.src_address,
+            //                     lmk: None,
+            //                     channel: None,
+            //                     encrypt: false,
+            //                 })
+            //                 .unwrap();
+            //         }
+            //         let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
+            //         println!("Send hello to peer status: {:?}", status);
+            //     }
+            // },
+            ticker2.next(),
+            led_ticker.next(),
+        )
         .await;
 
         match res {
-            Either::First(_) => {
+            Either3::First(_) => {
                 println!("Send");
-                let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
-                println!("Send broadcast status: {:?}", status)
+                // let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
+                // println!("Send broadcast status: {:?}", status)
             }
-            Either::Second(_) => (),
+            Either3::Second(_) => (),
+            Either3::Third(_) => {
+                println!("led write");
+                for (idx, c) in led_colors.iter_mut().enumerate() {
+                    c.hue = c.hue.wrapping_add(1);
+                    rbg_leds[idx] = hsv2rgb(*c);
+                }
+                ws.write(rbg_leds.clone().into_iter()).await.unwrap();
+                println!("led write done");
+            }
         }
     }
 }
