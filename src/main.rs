@@ -35,7 +35,9 @@ use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use esp_println::println;
 use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
-    initialize, EspWifiInitFor,
+    initialize,
+    wifi::{get_ap_mac, get_sta_mac},
+    EspWifiInitFor,
 };
 use smart_leds::{
     colors,
@@ -148,26 +150,33 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(button_interrupt(io.pins.gpio0, button_press_signal))
         .ok();
 
+    let mut my_sta_mac = [0u8; 6];
+    get_sta_mac(&mut my_sta_mac);
+
+    let mut my_ap_mac = [0u8; 6];
+    get_ap_mac(&mut my_ap_mac);
+
     loop {
         let res = select4(
             ticker.next(),
             async {
                 let r = esp_now.receive_async().await;
                 println!("Received {:?}", r);
-                if r.info.dst_address == BROADCAST_ADDRESS {
-                    if !esp_now.peer_exists(&r.info.src_address) {
-                        esp_now
-                            .add_peer(PeerInfo {
-                                peer_address: r.info.src_address,
-                                lmk: None,
-                                channel: None,
-                                encrypt: false,
-                            })
-                            .unwrap();
-                    }
-                    let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
-                    println!("Send hello to peer status: {:?}", status);
-                }
+                r
+                // if r.info.dst_address == BROADCAST_ADDRESS {
+                //     if !esp_now.peer_exists(&r.info.src_address) {
+                //         esp_now
+                //             .add_peer(PeerInfo {
+                //                 peer_address: r.info.src_address,
+                //                 lmk: None,
+                //                 channel: None,
+                //                 encrypt: false,
+                //             })
+                //             .unwrap();
+                //     }
+                //     let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
+                //     println!("Send hello to peer status: {:?}", status);
+                // }
             },
             led_ticker.next(),
             button_press_signal.wait(),
@@ -178,8 +187,12 @@ async fn main(spawner: Spawner) -> ! {
             Either4::First(_) => {
                 let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
             }
-            Either4::Second(_) => {
-                last_rx = Some(Instant::now());
+            Either4::Second(r) => {
+                // dst_address != BROADCAST_ADDRESS when esp32 hears its own message.
+                // Ignore messages from this device (for now).
+                if r.info.dst_address == BROADCAST_ADDRESS {
+                    last_rx = Some(Instant::now());
+                }
             }
             Either4::Third(_) => {
                 let val = if let Some(last_rx) = last_rx {
@@ -187,7 +200,7 @@ async fn main(spawner: Spawner) -> ! {
                     if secs_since > 10. {
                         255
                     } else {
-                        (255f32 * (1f32 - secs_since).max(0f32)) as u8
+                        (255f32 * ((0.25f32 - secs_since) / 0.25f32).max(0f32)) as u8
                     }
                 } else {
                     255
@@ -200,6 +213,7 @@ async fn main(spawner: Spawner) -> ! {
                 _ = ws.write(rbg_leds.clone().into_iter()).await;
             }
             Either4::Fourth(_) => {
+                let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
                 println!("button push");
             }
         }
