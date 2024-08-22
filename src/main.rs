@@ -16,7 +16,7 @@ use core::borrow::BorrowMut;
 
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either, Either3};
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
@@ -65,10 +65,10 @@ async fn main(spawner: Spawner) -> ! {
 
     let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.spi2channel;
-    let (tx_buffer, tx_descriptors, rx_buffer, rx_descriptors) = dma_buffers!(32000);
+    let (_tx_buffer, tx_descriptors, _rx_buffer, rx_descriptors) = dma_buffers!(32000);
 
     use esp_hal::spi::master::prelude::*;
-    let mut spi = Spi::new(peripherals.SPI2, 3u32.MHz(), SpiMode::Mode0, &clocks)
+    let spi = Spi::new(peripherals.SPI2, 3u32.MHz(), SpiMode::Mode0, &clocks)
         .with_mosi(io.pins.gpio27)
         .with_dma(
             dma_channel.configure_for_async(false, DmaPriority::Priority0),
@@ -131,47 +131,52 @@ async fn main(spawner: Spawner) -> ! {
         sat: 255,
     }; N_LEDS];
     let mut rbg_leds = [RGB8::default(); N_LEDS];
+    let mut last_rx: Option<Instant> = None;
     loop {
         let res = select3(
             ticker.next(),
-            // async {
-            //     let r = esp_now.receive_async().await;
-            //     println!("Received {:?}", r);
-            //     if r.info.dst_address == BROADCAST_ADDRESS {
-            //         if !esp_now.peer_exists(&r.info.src_address) {
-            //             esp_now
-            //                 .add_peer(PeerInfo {
-            //                     peer_address: r.info.src_address,
-            //                     lmk: None,
-            //                     channel: None,
-            //                     encrypt: false,
-            //                 })
-            //                 .unwrap();
-            //         }
-            //         let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
-            //         println!("Send hello to peer status: {:?}", status);
-            //     }
-            // },
-            ticker2.next(),
+            async {
+                let r = esp_now.receive_async().await;
+                println!("Received {:?}", r);
+                if r.info.dst_address == BROADCAST_ADDRESS {
+                    if !esp_now.peer_exists(&r.info.src_address) {
+                        esp_now
+                            .add_peer(PeerInfo {
+                                peer_address: r.info.src_address,
+                                lmk: None,
+                                channel: None,
+                                encrypt: false,
+                            })
+                            .unwrap();
+                    }
+                    let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
+                    println!("Send hello to peer status: {:?}", status);
+                }
+            },
             led_ticker.next(),
         )
         .await;
 
         match res {
             Either3::First(_) => {
-                println!("Send");
-                // let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
-                // println!("Send broadcast status: {:?}", status)
+                let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
             }
-            Either3::Second(_) => (),
+            Either3::Second(_) => {
+                last_rx = Some(Instant::now());
+            }
             Either3::Third(_) => {
-                println!("led write");
+                let val = if let Some(last_rx) = last_rx {
+                    let secs_since = last_rx.elapsed().as_millis() as f32 / 1000f32;
+                    (255f32 * (1f32 - secs_since).max(0f32)) as u8
+                } else {
+                    255
+                };
                 for (idx, c) in led_colors.iter_mut().enumerate() {
                     c.hue = c.hue.wrapping_add(1);
+                    c.val = val;
                     rbg_leds[idx] = hsv2rgb(*c);
                 }
                 ws.write(rbg_leds.clone().into_iter()).await.unwrap();
-                println!("led write done");
             }
         }
     }
