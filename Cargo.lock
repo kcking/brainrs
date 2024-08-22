@@ -223,6 +223,7 @@ version = "0.1.0"
 dependencies = [
  "embassy-executor",
  "embassy-futures",
+ "embassy-sync 0.5.0",
  "embassy-time",
  "embedded-io",
  "esp-alloc",

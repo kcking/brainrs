@@ -12,17 +12,16 @@
 #![feature(type_alias_impl_trait)]
 #![feature(async_closure)]
 
-use core::borrow::BorrowMut;
-
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     dma::{Dma, DmaPriority},
     dma_buffers, dma_descriptors,
-    gpio::{any_pin::AnyPin, GpioPin, Io, Level, Output},
+    gpio::{any_pin::AnyPin, GpioPin, Input, Io, Level, Output, Pull},
     peripherals::Peripherals,
     prelude::*,
     rmt::Rmt,
@@ -31,6 +30,7 @@ use esp_hal::{
     system::SystemControl,
     timer::{ErasedTimer, OneShotTimer, PeriodicTimer},
 };
+use esp_hal_embassy::InterruptExecutor;
 use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use esp_println::println;
 use esp_wifi::{
@@ -42,7 +42,7 @@ use smart_leds::{
     hsv::{hsv2rgb, Hsv},
     RGB, RGB8,
 };
-use static_cell::make_static;
+use static_cell::{make_static, StaticCell};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -123,7 +123,6 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let mut ticker = Ticker::every(Duration::from_secs(5));
-    let mut ticker2 = Ticker::every(Duration::from_secs(5));
     let mut led_ticker = Ticker::every(Duration::from_millis(33));
     let mut led_colors = [Hsv {
         hue: 0,
@@ -132,8 +131,25 @@ async fn main(spawner: Spawner) -> ! {
     }; N_LEDS];
     let mut rbg_leds = [RGB8::default(); N_LEDS];
     let mut last_rx: Option<Instant> = None;
+    let mut button_pressed = false;
+
+    static BUTTON_PRESS_SIGNAL: StaticCell<Signal<CriticalSectionRawMutex, bool>> =
+        StaticCell::new();
+    let button_press_signal = &*BUTTON_PRESS_SIGNAL.init(Signal::new());
+
+    static EXECUTOR_CORE_0: StaticCell<InterruptExecutor<0>> = StaticCell::new();
+    let executor_core0 =
+        InterruptExecutor::new(system.software_interrupt_control.software_interrupt0);
+    let executor_core0 = EXECUTOR_CORE_0.init(executor_core0);
+
+    let spawner = executor_core0.start(esp_hal::interrupt::Priority::Priority1);
+    // listen to button interrupts on separate task so we dont miss any
+    spawner
+        .spawn(button_interrupt(io.pins.gpio0, button_press_signal))
+        .ok();
+
     loop {
-        let res = select3(
+        let res = select4(
             ticker.next(),
             async {
                 let r = esp_now.receive_async().await;
@@ -154,20 +170,25 @@ async fn main(spawner: Spawner) -> ! {
                 }
             },
             led_ticker.next(),
+            button_press_signal.wait(),
         )
         .await;
 
         match res {
-            Either3::First(_) => {
+            Either4::First(_) => {
                 let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
             }
-            Either3::Second(_) => {
+            Either4::Second(_) => {
                 last_rx = Some(Instant::now());
             }
-            Either3::Third(_) => {
+            Either4::Third(_) => {
                 let val = if let Some(last_rx) = last_rx {
                     let secs_since = last_rx.elapsed().as_millis() as f32 / 1000f32;
-                    (255f32 * (1f32 - secs_since).max(0f32)) as u8
+                    if secs_since > 10. {
+                        255
+                    } else {
+                        (255f32 * (1f32 - secs_since).max(0f32)) as u8
+                    }
                 } else {
                     255
                 };
@@ -176,8 +197,27 @@ async fn main(spawner: Spawner) -> ! {
                     c.val = val;
                     rbg_leds[idx] = hsv2rgb(*c);
                 }
-                ws.write(rbg_leds.clone().into_iter()).await.unwrap();
+                _ = ws.write(rbg_leds.clone().into_iter()).await;
+            }
+            Either4::Fourth(_) => {
+                println!("button push");
             }
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn button_interrupt(
+    pin: GpioPin<0>,
+    control: &'static Signal<CriticalSectionRawMutex, bool>,
+) {
+    let mut button = Input::new(pin, Pull::Up);
+    println!(
+        "Starting button_interrupt on core {}",
+        esp_hal::get_core() as usize
+    );
+    loop {
+        button.wait_for_falling_edge().await;
+        control.signal(true);
     }
 }
