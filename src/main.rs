@@ -10,25 +10,30 @@
 #![no_std]
 #![no_main]
 
+use core::borrow::BorrowMut;
+
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
+    gpio::{any_pin::AnyPin, GpioPin, Io, Level, Output},
     peripherals::Peripherals,
     prelude::*,
+    rmt::Rmt,
     rng::Rng,
     system::SystemControl,
     timer::{ErasedTimer, OneShotTimer, PeriodicTimer},
 };
+use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use esp_println::println;
 use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
     initialize, EspWifiInitFor,
 };
+use smart_leds::colors;
 
-// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
@@ -38,14 +43,33 @@ macro_rules! mk_static {
     }};
 }
 
+#[embassy_executor::task]
+async fn blink(mut leds: SmartLedsAdapter<esp_hal::rmt::Channel<esp_hal::Blocking, 0>, 25>) {
+    loop {
+        use smart_leds::SmartLedsWrite as _;
+        // THIS WORKS but colors are _basically_ white
+        _ = leds.write([colors::BLACK]);
+        Timer::after_millis(150).await;
+        // _ = leds.write([colors::ROSY_BROWN]);
+        Timer::after_millis(150).await;
+    }
+}
+
 #[main]
-async fn main(_spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
 
     let peripherals = Peripherals::take();
-
     let system = SystemControl::new(peripherals.SYSTEM);
+
     let clocks = ClockControl::max(system.clock_control).freeze();
+
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let rmt = Rmt::new(peripherals.RMT, 80.MHz(), &clocks, None).unwrap();
+
+    let rmt_buffer = smartLedBuffer!(1);
+    let led = SmartLedsAdapter::new(rmt.channel0, io.pins.gpio27, rmt_buffer, &clocks);
+    spawner.must_spawn(blink(led));
 
     let timer = PeriodicTimer::new(
         esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0, &clocks, None)

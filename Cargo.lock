@@ -236,6 +236,7 @@ dependencies = [
  "esp-wifi",
  "heapless",
  "log",
+ "smart-leds",
  "smoltcp",
  "static_cell",
 ]
@@ -1303,6 +1304,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb5b1b31579f3811bf615c144393417496f152e12ac8b7663bf664f4a815306d"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smart-leds"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66df34e571fa9993fa6f99131a374d58ca3d694b75f9baac93458fe0d6057bf0"
+dependencies = [
+ "smart-leds-trait",
 ]
 
 [[package]]

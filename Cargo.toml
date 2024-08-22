@@ -90,9 +90,9 @@ esp32s3 = [
 [dependencies]
 esp-hal-embassy = { version = "0.2.0", optional = true }
 esp-storage = { version = "0.3.0", optional = true }
-esp-hal-smartled = { version = "*", optional = true }
-esp-ieee802154 = { version = "*", optional = true }
-embassy-time = { version = "*", optional = true }
+esp-hal-smartled = { version = "0.12.0", optional = true }
+esp-ieee802154 = { version = "0.1.0", optional = true }
+embassy-time = { version = "0.3.2", optional = true }
 esp-backtrace = { version = "0.13.0", features = [
     "esp32",
     "exception-handler",
@@ -126,6 +126,7 @@ smoltcp = { version = "0.11.0", default-features = false, features = [
 embassy-futures = "0.1.1"
 embassy-executor = "0.5.0"
 static_cell = "2.1.0"
+smart-leds = "0.4.0"
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
