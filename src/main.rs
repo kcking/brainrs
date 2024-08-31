@@ -19,9 +19,10 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
+    dma::*,
     dma::{Dma, DmaPriority},
     dma_buffers, dma_descriptors,
-    gpio::{any_pin::AnyPin, GpioPin, Input, Io, Level, Output, Pull},
+    gpio::{GpioPin, Input, Io, Level, Output, Pull},
     peripherals::Peripherals,
     prelude::*,
     rmt::Rmt,
@@ -55,6 +56,8 @@ macro_rules! mk_static {
     }};
 }
 
+const MAGIC_BYTES: [u8; 3] = [0xA1, 0x41, 0xAB];
+
 #[main]
 async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
@@ -67,29 +70,23 @@ async fn main(spawner: Spawner) -> ! {
 
     let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.spi2channel;
-    let (_tx_buffer, tx_descriptors, _rx_buffer, rx_descriptors) = dma_buffers!(32000);
+    let (tx_buffer, tx_descriptors, rx_buffer, rx_descriptors) = dma_buffers!(32000);
+    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
 
-    use esp_hal::spi::master::prelude::*;
     let spi = Spi::new(peripherals.SPI2, 3u32.MHz(), SpiMode::Mode0, &clocks)
         .with_mosi(io.pins.gpio27)
-        .with_dma(
-            dma_channel.configure_for_async(false, DmaPriority::Priority0),
-            tx_descriptors,
-            rx_descriptors,
-        );
+        .with_dma(dma_channel.configure_for_async(false, DmaPriority::Priority0))
+        .with_buffers(dma_tx_buf, dma_rx_buf);
 
     const N_LEDS: usize = 100;
     let mut ws = ws2812_async::Ws2812::<_, { 12 * N_LEDS }>::new(spi);
 
-    let timer = PeriodicTimer::new(
-        esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0, &clocks, None)
-            .timer0
-            .into(),
-    );
+    let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0, &clocks);
 
     let init = initialize(
         EspWifiInitFor::Wifi,
-        timer,
+        timg0.timer0,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
         &clocks,
@@ -102,14 +99,8 @@ async fn main(spawner: Spawner) -> ! {
 
     #[cfg(feature = "esp32")]
     {
-        let timg1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG1, &clocks, None);
-        esp_hal_embassy::init(
-            &clocks,
-            mk_static!(
-                [OneShotTimer<ErasedTimer>; 1],
-                [OneShotTimer::new(timg1.timer0.into())]
-            ),
-        );
+        let timg1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG1, &clocks);
+        esp_hal_embassy::init(&clocks, timg1.timer0);
     }
 
     #[cfg(not(feature = "esp32"))]
@@ -187,13 +178,7 @@ async fn main(spawner: Spawner) -> ! {
             Either4::First(_) => {
                 let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
             }
-            Either4::Second(r) => {
-                // dst_address != BROADCAST_ADDRESS when esp32 hears its own message.
-                // Ignore messages from this device (for now).
-                if r.info.dst_address == BROADCAST_ADDRESS {
-                    last_rx = Some(Instant::now());
-                }
-            }
+            Either4::Second(r) => {}
             Either4::Third(_) => {
                 let val = if let Some(last_rx) = last_rx {
                     let secs_since = last_rx.elapsed().as_millis() as f32 / 1000f32;
@@ -217,6 +202,28 @@ async fn main(spawner: Spawner) -> ! {
                 println!("button push");
             }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum Command {
+    Blink,
+}
+
+impl TryFrom<u8> for Command {
+    type Error = ();
+    fn try_from(b: u8) -> Result<Self, Self::Error> {
+        Ok(match b {
+            0 => Command::Blink,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl Command {
+    fn prepend_magic(&self) -> [u8; 4] {
+        [MAGIC_BYTES[0], MAGIC_BYTES[1], MAGIC_BYTES[2], *self as u8]
     }
 }
 
