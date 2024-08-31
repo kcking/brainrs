@@ -12,6 +12,11 @@
 #![feature(type_alias_impl_trait)]
 #![feature(async_closure)]
 
+extern crate alloc;
+
+use core::fmt::write;
+
+use alloc::format;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
@@ -38,8 +43,8 @@ use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
     initialize,
     wifi::{
-        get_ap_mac, get_sta_mac, Configuration, WifiController, WifiDevice, WifiEvent,
-        WifiStaDevice, WifiState,
+        get_ap_mac, get_sta_mac, ipv4::SocketAddr, Configuration, WifiController, WifiDevice,
+        WifiEvent, WifiStaDevice, WifiState,
     },
     EspWifiInitFor,
 };
@@ -52,8 +57,8 @@ use smart_leds::{
 use static_cell::{make_static, StaticCell};
 
 use embassy_net::{
-    tcp::TcpSocket, Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack, StackResources,
-    StaticConfigV4,
+    tcp::TcpSocket, udp::PacketMetadata, Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack,
+    StackResources, StaticConfigV4,
 };
 
 macro_rules! mk_static {
@@ -122,8 +127,10 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     let client_config = Configuration::Client(esp_wifi::wifi::ClientConfiguration {
-        ssid: "NewAirLabs24".try_into().unwrap(),
-        password: "nospaces".try_into().unwrap(),
+        // ssid: "NewAirLabs24".try_into().unwrap(),
+        // password: "nospaces".try_into().unwrap(),
+        ssid: "JoeStarstruck".try_into().unwrap(),
+        password: "CandyIs!Free".try_into().unwrap(),
         ..Default::default()
     });
 
@@ -177,9 +184,37 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut my_sta_mac = [0u8; 6];
     get_sta_mac(&mut my_sta_mac);
+    let mac = my_sta_mac;
+    let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
+
+    info!("brain_id: {}", brain_id);
 
     let mut my_ap_mac = [0u8; 6];
     get_ap_mac(&mut my_ap_mac);
+
+    while esp_wifi::wifi::get_sta_state() != WifiState::StaConnected {
+        Timer::after_millis(1000).await;
+    }
+    let mut rx_meta = [PacketMetadata::EMPTY; 16];
+    let mut rx_buffer = [0; 4096];
+    let mut tx_meta = [PacketMetadata::EMPTY; 16];
+    let mut tx_buffer = [0; 4096];
+    let mut buf = [0; 4096];
+    let socket = embassy_net::udp::UdpSocket::new(
+        &sta_stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+
+    let broadcast: embassy_net::IpEndpoint = "255.255.255.255:8003".parse().unwrap();
+    socket
+        .send_to(&[0x01, 0x02, 0x03], broadcast)
+        .await
+        .unwrap();
+    let (len, _) = socket.recv_from(&mut buf).await.unwrap();
+    info!("udp rx: {:?}", &buf[..len]);
 
     loop {
         let res = select4(
@@ -248,28 +283,6 @@ async fn sta_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
     stack.run().await
 }
 
-#[derive(Clone, Copy)]
-#[repr(u8)]
-enum Command {
-    Blink,
-}
-
-impl TryFrom<u8> for Command {
-    type Error = ();
-    fn try_from(b: u8) -> Result<Self, Self::Error> {
-        Ok(match b {
-            0 => Command::Blink,
-            _ => return Err(()),
-        })
-    }
-}
-
-impl Command {
-    fn prepend_magic(&self) -> [u8; 4] {
-        [MAGIC_BYTES[0], MAGIC_BYTES[1], MAGIC_BYTES[2], *self as u8]
-    }
-}
-
 #[embassy_executor::task]
 async fn button_interrupt(
     pin: GpioPin<0>,
@@ -285,3 +298,71 @@ async fn button_interrupt(
         control.signal(true);
     }
 }
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+enum MessageType {
+    Hello = 0u8,
+}
+
+/*
+    enum class Type : uint8_t {
+        BRAIN_HELLO,       // Brain -> Pinky|Mapper
+        BRAIN_PANEL_SHADE, // Pinky -> Brain
+        MAPPER_HELLO,      // Mapper -> Pinky
+        BRAIN_ID_REQUEST,  // Mapper -> Brain
+        BRAIN_MAPPING,
+        PING,
+        USE_FIRMWARE,
+    };
+
+    static const size_t FRAGMENT_MAX = 1500;
+    static const size_t HEADER_SIZE = 12;
+
+    struct Header {
+        int16_t id;
+        int16_t frameSize;
+        int32_t msgSize;
+        int32_t frameOffset;
+    };
+
+    BrainHelloMsg(const char *brainId,
+            const char *panelName,
+            const char *firmwareVersion,
+            const char *idfVersion) {
+        // Need capacity for:
+        //      id byte
+        //      brainId string
+        //      panelName NullableString (adds 1 byte boolean)
+        //      firmwareVersion string
+        //      idfVersion string
+        if (prepCapacity(
+                1 +
+                capFor(brainId) +
+                capForNullable(panelName) +
+                capForNullable(firmwareVersion) +
+                capForNullable(idfVersion)
+                )) {
+            writeByte(static_cast<int>(Msg::Type::BRAIN_HELLO));
+
+            writeString(brainId);
+            writeNullableString(panelName);
+            writeNullableString(firmwareVersion);
+            writeNullableString(idfVersion);
+        }
+    }
+
+    void writeString(const char* sz) {
+        if (!sz) return;
+
+        size_t len = strlen(sz);
+        size_t xtra = capFor(sz);
+        if (prepCapacity(m_used + xtra)) {
+            writeInt(len);
+            for ( int i = 0; i < len; i++ ) {
+                m_buf[m_cursor++] = (uint8_t)sz[i];
+            }
+            if (m_cursor > m_used) m_used = m_cursor;
+        }
+    }
+*/
