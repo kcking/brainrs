@@ -130,10 +130,16 @@ embassy-executor = { version = "0.6.0", features = ["task-arena-size-65536"] }
 static_cell = { version = "2.1.0", features = ["nightly"] }
 smart-leds = "0.4.0"
 ws2812-async = "0.2.0"
+xtensa-lx-rt = { version = "0.17", features = ["float-save-restore"] }
+embassy-net = { version = "0.4.0", features = ["dhcpv4", "udp", "proto-ipv4", "proto-ipv6", "tcp"] }
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
 opt-level = "s"
+
+[profile.dev.package.xtensa-lx-rt]
+opt-level = 'z'
 
 [profile.release]
 codegen-units = 1        # LLVM can perform better optimizations using a single thread

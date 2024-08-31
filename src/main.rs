@@ -37,15 +37,24 @@ use esp_println::println;
 use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
     initialize,
-    wifi::{get_ap_mac, get_sta_mac},
+    wifi::{
+        get_ap_mac, get_sta_mac, Configuration, WifiController, WifiDevice, WifiEvent,
+        WifiStaDevice, WifiState,
+    },
     EspWifiInitFor,
 };
+use log::info;
 use smart_leds::{
     colors,
     hsv::{hsv2rgb, Hsv},
     RGB, RGB8,
 };
 use static_cell::{make_static, StaticCell};
+
+use embassy_net::{
+    tcp::TcpSocket, Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack, StackResources,
+    StaticConfigV4,
+};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -94,8 +103,33 @@ async fn main(spawner: Spawner) -> ! {
     .unwrap();
 
     let wifi = peripherals.WIFI;
-    let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-    println!("esp-now version {}", esp_now.get_version().unwrap());
+    // let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+    // println!("esp-now version {}", esp_now.get_version().unwrap());
+
+    let (wifi_sta_interface, mut controller) =
+        esp_wifi::wifi::new_with_mode(&init, wifi, esp_wifi::wifi::WifiStaDevice).unwrap();
+
+    let seed = 1337;
+    let sta_config = Config::dhcpv4(Default::default());
+    let sta_stack = &*mk_static!(
+        Stack<WifiDevice<'_, WifiStaDevice>>,
+        Stack::new(
+            wifi_sta_interface,
+            sta_config,
+            mk_static!(StackResources<3>, StackResources::<3>::new()),
+            seed
+        )
+    );
+
+    let client_config = Configuration::Client(esp_wifi::wifi::ClientConfiguration {
+        ssid: "NewAirLabs24".try_into().unwrap(),
+        password: "nospaces".try_into().unwrap(),
+        ..Default::default()
+    });
+
+    controller.set_configuration(&client_config).unwrap();
+    spawner.spawn(connection(controller)).unwrap();
+    spawner.spawn(sta_task(&sta_stack)).unwrap();
 
     #[cfg(feature = "esp32")]
     {
@@ -150,34 +184,14 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         let res = select4(
             ticker.next(),
-            async {
-                let r = esp_now.receive_async().await;
-                println!("Received {:?}", r);
-                r
-                // if r.info.dst_address == BROADCAST_ADDRESS {
-                //     if !esp_now.peer_exists(&r.info.src_address) {
-                //         esp_now
-                //             .add_peer(PeerInfo {
-                //                 peer_address: r.info.src_address,
-                //                 lmk: None,
-                //                 channel: None,
-                //                 encrypt: false,
-                //             })
-                //             .unwrap();
-                //     }
-                //     let status = esp_now.send_async(&r.info.src_address, b"Hello Peer").await;
-                //     println!("Send hello to peer status: {:?}", status);
-                // }
-            },
+            Timer::after_millis(1000),
             led_ticker.next(),
             button_press_signal.wait(),
         )
         .await;
 
         match res {
-            Either4::First(_) => {
-                let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
-            }
+            Either4::First(_) => {}
             Either4::Second(r) => {}
             Either4::Third(_) => {
                 let val = if let Some(last_rx) = last_rx {
@@ -198,11 +212,40 @@ async fn main(spawner: Spawner) -> ! {
                 _ = ws.write(rbg_leds.clone().into_iter()).await;
             }
             Either4::Fourth(_) => {
-                let status = esp_now.send_async(&BROADCAST_ADDRESS, b"0123456789").await;
                 println!("button push");
             }
         }
     }
+}
+
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    println!("start connection task");
+    println!("Device capabilities: {:?}", controller.get_capabilities());
+
+    println!("Starting wifi");
+    controller.start().await.unwrap();
+    println!("Wifi started!");
+
+    loop {
+        println!("About to connect...");
+        match controller.connect().await {
+            Ok(_) => {
+                info!("connected");
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                println!("STA disconnected");
+            }
+            Err(e) => {
+                println!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
+    }
+}
+#[embassy_executor::task]
+async fn sta_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
+    stack.run().await
 }
 
 #[derive(Clone, Copy)]
