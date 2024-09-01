@@ -14,13 +14,15 @@
 
 extern crate alloc;
 
-use core::fmt::write;
+use core::{convert::Infallible, fmt::write, mem::MaybeUninit};
 
 use alloc::format;
+use byteorder::{BigEndian, ByteOrder};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use embedded_io::{ErrorType, Write};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
@@ -48,6 +50,7 @@ use esp_wifi::{
     },
     EspWifiInitFor,
 };
+use heapless::Vec;
 use log::info;
 use smart_leds::{
     colors,
@@ -77,6 +80,7 @@ async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
 
     let peripherals = Peripherals::take();
+    init_heap();
     let system = SystemControl::new(peripherals.SYSTEM);
 
     let clocks = ClockControl::max(system.clock_control).freeze();
@@ -209,6 +213,15 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     let broadcast: embassy_net::IpEndpoint = "255.255.255.255:8003".parse().unwrap();
+
+    // let mut msg = heapless::Vec::<u8, 32>::new();
+    // let mut msg = [0u8; 32];
+    let mut msg = VecWriter {
+        buffer: Vec::<u8, 128>::new(),
+    };
+    write_hello_msg(&mut msg, &brain_id);
+    info!("hello_msg {:x?}", &msg.buffer);
+
     socket
         .send_to(&[0x01, 0x02, 0x03], broadcast)
         .await
@@ -250,6 +263,58 @@ async fn main(spawner: Spawner) -> ! {
                 println!("button push");
             }
         }
+    }
+}
+
+pub struct VecWriter {
+    buffer: Vec<u8, 128>, // Use a heapless Vec with a fixed capacity
+}
+
+impl ErrorType for VecWriter {
+    type Error = Infallible;
+}
+impl Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        let available_space = self.buffer.capacity() - self.buffer.len();
+        let write_len = buf.len().min(available_space);
+        self.buffer
+            .extend_from_slice(&buf[..write_len])
+            .map_err(|_| ())
+            .unwrap();
+        Ok(write_len)
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        // No-op for this example
+        Ok(())
+    }
+}
+
+fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
+    /*
+            writeString(brainId);
+            writeNullableString(panelName);
+            writeNullableString(firmwareVersion);
+            writeNullableString(idfVersion);
+    */
+    write_str(w, brain_id);
+    write_str_opt(w, None);
+    write_str_opt(w, None);
+    write_str_opt(w, None);
+}
+
+fn write_str(w: &mut impl Write, s: &str) {
+    let len = s.len() as u32;
+    w.write_all(len.to_be_bytes().as_slice()).unwrap();
+    w.write_all(s.as_bytes()).unwrap();
+}
+
+fn write_str_opt(w: &mut impl Write, s: Option<&str>) {
+    if let Some(s) = s {
+        w.write_all(&[1]).unwrap();
+        write_str(w, s);
+    } else {
+        w.write_all(&[0]).unwrap();
     }
 }
 
@@ -366,3 +431,15 @@ enum MessageType {
         }
     }
 */
+
+#[global_allocator]
+static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
+
+fn init_heap() {
+    const HEAP_SIZE: usize = 1024;
+    static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
+
+    unsafe {
+        ALLOCATOR.init(HEAP.as_mut_ptr() as *mut u8, HEAP_SIZE);
+    }
+}
