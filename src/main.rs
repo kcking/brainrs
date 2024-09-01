@@ -204,15 +204,16 @@ async fn main(spawner: Spawner) -> ! {
     let mut tx_meta = [PacketMetadata::EMPTY; 16];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
-    let socket = embassy_net::udp::UdpSocket::new(
+    let mut socket = embassy_net::udp::UdpSocket::new(
         &sta_stack,
         &mut rx_meta,
         &mut rx_buffer,
         &mut tx_meta,
         &mut tx_buffer,
     );
+    socket.bind(8003).unwrap();
 
-    let broadcast: embassy_net::IpEndpoint = "255.255.255.255:8003".parse().unwrap();
+    let broadcast: embassy_net::IpEndpoint = "255.255.255.255:8002".parse().unwrap();
 
     // let mut msg = heapless::Vec::<u8, 32>::new();
     // let mut msg = [0u8; 32];
@@ -220,10 +221,21 @@ async fn main(spawner: Spawner) -> ! {
         buffer: Vec::<u8, 128>::new(),
     };
     write_hello_msg(&mut msg, &brain_id);
-    info!("hello_msg {:x?}", &msg.buffer);
+
+    let mut msg_id = 0i16;
+    let header = Header::from_payload(msg_id, msg.buffer.as_slice());
+    msg_id += 1;
+    let mut msg_with_header = VecWriter {
+        buffer: Vec::<u8, 128>::new(),
+    };
+    msg_with_header
+        .write_all(header.to_bytes().as_slice())
+        .unwrap();
+    msg_with_header.write_all(msg.buffer.as_slice()).unwrap();
+    info!("hello_msg {:x?}", &msg_with_header.buffer);
 
     socket
-        .send_to(&[0x01, 0x02, 0x03], broadcast)
+        .send_to(msg_with_header.buffer.as_slice(), broadcast)
         .await
         .unwrap();
     let (len, _) = socket.recv_from(&mut buf).await.unwrap();
@@ -292,11 +304,13 @@ impl Write for VecWriter {
 
 fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
     /*
+            writeByte(BRAIN_HELLO);
             writeString(brainId);
             writeNullableString(panelName);
             writeNullableString(firmwareVersion);
             writeNullableString(idfVersion);
     */
+    w.write_all(&[MessageType::BrainHello as u8]).unwrap();
     write_str(w, brain_id);
     write_str_opt(w, None);
     write_str_opt(w, None);
@@ -367,7 +381,38 @@ async fn button_interrupt(
 #[repr(u8)]
 #[derive(Copy, Clone)]
 enum MessageType {
-    Hello = 0u8,
+    BrainHello = 0u8,
+}
+
+struct Header {
+    id: i16,
+    frame_size: i16,
+    msg_size: i32,
+    frame_offset: i32,
+}
+
+const FRAGMENT_MAX: usize = 1500;
+const HEADER_SIZE: usize = 12;
+
+impl Header {
+    fn from_payload(id: i16, msg: &[u8]) -> Self {
+        // TODO: impl fragmentation
+        Self {
+            id,
+            frame_size: msg.len() as i16,
+            msg_size: msg.len() as i32,
+            frame_offset: 0,
+        }
+    }
+    fn to_bytes(&self) -> [u8; HEADER_SIZE] {
+        let mut buf = [0u8; HEADER_SIZE];
+        let mut w = buf.as_mut_slice();
+        w.write_all(&self.id.to_be_bytes()).unwrap();
+        w.write_all(&self.frame_size.to_be_bytes()).unwrap();
+        w.write_all(&self.msg_size.to_be_bytes()).unwrap();
+        w.write_all(&self.frame_offset.to_be_bytes()).unwrap();
+        buf
+    }
 }
 
 /*
@@ -408,8 +453,8 @@ enum MessageType {
                 capForNullable(firmwareVersion) +
                 capForNullable(idfVersion)
                 )) {
-            writeByte(static_cast<int>(Msg::Type::BRAIN_HELLO));
 
+            writeByte(static_cast<int>(Msg::Type::BRAIN_HELLO));
             writeString(brainId);
             writeNullableString(panelName);
             writeNullableString(firmwareVersion);
