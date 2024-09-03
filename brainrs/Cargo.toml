@@ -17,8 +17,9 @@ default = [
     "esp-wifi/wifi-default",
     "esp-wifi/wifi",
     "esp-wifi/utils",
-    "esp-wifi/esp-now",
-
+  # "esp-wifi/esp-now",
+    "esp-wifi/wifi-logs",
+    "esp-wifi/log",
 ]
 async = ["esp-hal/async"]
 embassy-generic-timers = ["embassy-time/generic-queue-8"]
@@ -138,6 +139,9 @@ byteorder = { version = "1.5.0", default-features = false }
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
 opt-level = "s"
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
 
 [profile.dev.package.xtensa-lx-rt]
 opt-level = 'z'

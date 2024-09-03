@@ -42,12 +42,12 @@ use esp_hal_embassy::InterruptExecutor;
 use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use esp_println::println;
 use esp_wifi::{
-    esp_now::{PeerInfo, BROADCAST_ADDRESS},
+    // esp_now::{PeerInfo, BROADCAST_ADDRESS},
     initialize,
     wifi::{
         get_ap_mac, get_sta_mac, ipv4::SocketAddr, AccessPointConfiguration, ClientConfiguration,
-        Configuration, WifiApDevice, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
-        WifiState,
+        Configuration, WifiApDevice, WifiController, WifiDevice, WifiDeviceMode, WifiEvent,
+        WifiMode, WifiStaDevice, WifiState,
     },
     EspWifiInitFor,
 };
@@ -61,8 +61,8 @@ use smart_leds::{
 use static_cell::{make_static, StaticCell};
 
 use embassy_net::{
-    tcp::TcpSocket, udp::PacketMetadata, Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack,
-    StackResources, StaticConfigV4,
+    tcp::TcpSocket, udp::PacketMetadata, Config, IpAddress, IpListenEndpoint, Ipv4Address,
+    Ipv4Cidr, Stack, StackResources, StaticConfigV4,
 };
 
 macro_rules! mk_static {
@@ -100,8 +100,24 @@ async fn main(spawner: Spawner) -> ! {
 
     const N_LEDS: usize = 100;
     let mut ws = ws2812_async::Ws2812::<_, { 12 * N_LEDS }>::new(spi);
-
     let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0, &clocks);
+
+    let init = initialize(
+        EspWifiInitFor::Wifi,
+        timg0.timer0,
+        Rng::new(peripherals.RNG),
+        peripherals.RADIO_CLK,
+        &clocks,
+    )
+    .unwrap();
+
+    let wifi = peripherals.WIFI;
+    // let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+    // println!("esp-now version {}", esp_now.get_version().unwrap());
+
+    let (wifi_sta_interface, mut controller) =
+        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
+
     #[cfg(feature = "esp32")]
     {
         let timg1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG1, &clocks);
@@ -120,22 +136,6 @@ async fn main(spawner: Spawner) -> ! {
         );
     }
 
-    let init = initialize(
-        EspWifiInitFor::Wifi,
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-        &clocks,
-    )
-    .unwrap();
-
-    let wifi = peripherals.WIFI;
-    // let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-    // println!("esp-now version {}", esp_now.get_version().unwrap());
-
-    let (wifi_ap_interface, wifi_sta_interface, mut controller) =
-        esp_wifi::wifi::new_ap_sta(&init, wifi).unwrap();
-
     let seed = 1337;
 
     let ap_config = Config::ipv4_static(StaticConfigV4 {
@@ -143,61 +143,71 @@ async fn main(spawner: Spawner) -> ! {
         gateway: Some(Ipv4Address::from_bytes(&[192, 168, 2, 1])),
         dns_servers: Default::default(),
     });
-    //let sta_config = Config::dhcpv4(Default::default());
-    let sta_config = Config::ipv4_static(StaticConfigV4 {
-        address: "192.168.2.17/32".parse().unwrap(),
-        gateway: Some("192.168.2.1".parse().unwrap()),
-        dns_servers: heapless::Vec::new(),
-    });
-    let ap_stack = &*mk_static!(
-        Stack<WifiDevice<'_, WifiApDevice>>,
-        Stack::new(
-            wifi_ap_interface,
-            ap_config,
-            mk_static!(StackResources<3>, StackResources::<3>::new()),
-            seed
-        )
-    );
+    //let ap_config = Config::dhcpv4(Default::default());
+    let sta_config = Config::dhcpv4(Default::default());
+    // let sta_config = Config::ipv4_static(StaticConfigV4 {
+    //     address: "192.168.2.17/32".parse().unwrap(),
+    //     //gateway: Some("192.168.2.1".parse().unwrap()),
+    //     gateway: None,
+    //     dns_servers: heapless::Vec::new(),
+    // });
+    // let ap_stack = &*mk_static!(
+    //     Stack<WifiDevice<'_, WifiApDevice>>,
+    //     Stack::new(
+    //         wifi_ap_interface,
+    //         ap_config,
+    //         mk_static!(StackResources<3>, StackResources::<3>::new()),
+    //         seed
+    //     )
+    // );
     let sta_stack = &*mk_static!(
         Stack<WifiDevice<'_, WifiStaDevice>>,
         Stack::new(
             wifi_sta_interface,
             sta_config,
             mk_static!(StackResources<3>, StackResources::<3>::new()),
-            seed
+            seed + 1,
         )
     );
 
     let SSID = "airesp";
     let PASSWORD = "nospaces";
-    let client_config = Configuration::Mixed(
-        ClientConfiguration {
-            ssid: SSID.try_into().unwrap(),
-            // password: PASSWORD.try_into().unwrap(),
-            ..Default::default()
-        },
-        AccessPointConfiguration {
-            ssid: SSID.try_into().unwrap(),
-            ..Default::default()
-        },
-    );
+    // let client_config = Configuration::Mixed(
+    //     ClientConfiguration {
+    //         // ssid: SSID.try_into().unwrap(),
+    //         ssid: "Kevin's iPhone".try_into().unwrap(),
+    //         password: "qwertyui".try_into().unwrap(),
+    //         // password: PASSWORD.try_into().unwrap(),
+    //         ..Default::default()
+    //     },
+    //     AccessPointConfiguration {
+    //         ssid: SSID.try_into().unwrap(),
+    //         ..Default::default()
+    //     },
+    // );
+    let client_config = Configuration::Client(ClientConfiguration {
+        ssid: "Kevin's iPhone".try_into().unwrap(),
+        password: "qwertyui".try_into().unwrap(),
+        ..Default::default()
+    });
 
     controller.set_configuration(&client_config).unwrap();
     spawner.spawn(connection(controller)).unwrap();
     spawner.spawn(sta_task(&sta_stack)).unwrap();
-    spawner.spawn(ap_task(&ap_stack)).unwrap();
+    // spawner.spawn(ap_task(&ap_stack)).unwrap();
 
-    loop {
-        if ap_stack.is_link_up() {
-            break;
-        }
-        info!("waiting for ap stack...");
-        Timer::after(Duration::from_millis(500)).await;
-    }
+    // loop {
+    //     if ap_stack.is_link_up() {
+    //         break;
+    //     }
+    //     info!("waiting for ap stack...");
+    //     Timer::after(Duration::from_millis(500)).await;
+    // }
     loop {
         if sta_stack.is_link_up() {
             break;
         }
+
         println!("Waiting for IP...");
         Timer::after(Duration::from_millis(500)).await;
     }
@@ -253,9 +263,16 @@ async fn main(spawner: Spawner) -> ! {
         &mut tx_meta,
         &mut tx_buffer,
     );
-    socket.bind(8003).unwrap();
+    socket.bind(8002).unwrap();
 
-    let broadcast: embassy_net::IpEndpoint = "255.255.255.255:8002".parse().unwrap();
+    let mut broadcast: embassy_net::IpEndpoint = "255.255.255.255:8002".parse().unwrap();
+    sta_stack.wait_config_up().await;
+    if let Some(cfg) = sta_stack.config_v4() {
+        info!("cfg: {cfg:?}");
+        // broadcast = (cfg.address.broadcast().unwrap(), 8002).into();
+        // info!("{broadcast:?}");
+    }
+    // let broadcast: embassy_net::IpEndpoint = "192.168.2.255:8002".parse().unwrap();
 
     // let mut msg = heapless::Vec::<u8, 32>::new();
     // let mut msg = [0u8; 32];
@@ -276,12 +293,31 @@ async fn main(spawner: Spawner) -> ! {
     msg_with_header.write_all(msg.buffer.as_slice()).unwrap();
     info!("hello_msg {:x?}", &msg_with_header.buffer);
 
+    // send to individual addresses for now as iphone hotspot doesnt allow udp broadcast
+    for i in 1..=14 {
+        let mut this_addr = broadcast;
+        match &mut this_addr.addr {
+            IpAddress::Ipv4(addr) => {
+                addr.0 = [172, 20, 10, i];
+                addr.0 = [192, 168, 5, 40];
+                addr.0 = [100, 115, 92, 196];
+                // addr.0[3] = i;
+            }
+            _ => {}
+        }
+        socket
+            .send_to(msg_with_header.buffer.as_slice(), this_addr)
+            .await
+            .unwrap();
+        info!("sent to {this_addr:?}");
+    }
+
     socket
         .send_to(msg_with_header.buffer.as_slice(), broadcast)
         .await
         .unwrap();
-    let (len, _) = socket.recv_from(&mut buf).await.unwrap();
-    info!("udp rx: {:?}", &buf[..len]);
+    let (len, src) = socket.recv_from(&mut buf).await.unwrap();
+    info!("udp rx from {src:?}: {:?}", &buf[..len]);
 
     loop {
         let res = select4(
@@ -384,6 +420,8 @@ async fn connection(mut controller: WifiController<'static>) {
     println!("Wifi started!");
 
     loop {
+        // match esp_wifi::wifi::get_ap_state() {
+        //     WifiState::ApStarted => {
         println!("About to connect...");
         match controller.connect().await {
             Ok(_) => {
@@ -397,6 +435,9 @@ async fn connection(mut controller: WifiController<'static>) {
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
+        // }
+        //     _ => {}
+        // }
     }
 }
 #[embassy_executor::task]
@@ -523,7 +564,7 @@ impl Header {
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
 fn init_heap() {
-    const HEAP_SIZE: usize = 1024;
+    const HEAP_SIZE: usize = 3192;
     static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
 
     unsafe {

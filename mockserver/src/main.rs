@@ -3,6 +3,7 @@ use std::net::UdpSocket;
 fn main() -> std::io::Result<()> {
     // Bind the UDP socket to the desired port
     let socket = UdpSocket::bind("0.0.0.0:8002")?;
+    socket.set_broadcast(true).unwrap();
     println!("Listening on UDP port 8002...");
 
     let mut buf = [0; 1024]; // Buffer to store incoming data
