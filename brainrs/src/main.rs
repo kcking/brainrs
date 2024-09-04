@@ -22,7 +22,7 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use embedded_io::{ErrorType, Write};
+use embedded_io::{ErrorType, Read, Write};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
@@ -52,7 +52,7 @@ use esp_wifi::{
     EspWifiInitFor,
 };
 use heapless::Vec;
-use log::info;
+use log::{info, trace};
 use smart_leds::{
     colors,
     hsv::{hsv2rgb, Hsv},
@@ -170,7 +170,7 @@ async fn main(spawner: Spawner) -> ! {
         )
     );
 
-    let SSID = "airesp";
+    let SSID = "io";
     let PASSWORD = "nospaces";
     // let client_config = Configuration::Mixed(
     //     ClientConfiguration {
@@ -186,8 +186,8 @@ async fn main(spawner: Spawner) -> ! {
     //     },
     // );
     let client_config = Configuration::Client(ClientConfiguration {
-        ssid: "Kevin's iPhone".try_into().unwrap(),
-        password: "qwertyui".try_into().unwrap(),
+        ssid: SSID.try_into().unwrap(),
+        password: PASSWORD.try_into().unwrap(),
         ..Default::default()
     });
 
@@ -263,14 +263,14 @@ async fn main(spawner: Spawner) -> ! {
         &mut tx_meta,
         &mut tx_buffer,
     );
-    socket.bind(8002).unwrap();
+    socket.bind(8003).unwrap();
 
     let mut broadcast: embassy_net::IpEndpoint = "255.255.255.255:8002".parse().unwrap();
     sta_stack.wait_config_up().await;
     if let Some(cfg) = sta_stack.config_v4() {
         info!("cfg: {cfg:?}");
-        // broadcast = (cfg.address.broadcast().unwrap(), 8002).into();
-        // info!("{broadcast:?}");
+        broadcast = (cfg.address.broadcast().unwrap(), 8002).into();
+        info!("{broadcast:?}");
     }
     // let broadcast: embassy_net::IpEndpoint = "192.168.2.255:8002".parse().unwrap();
 
@@ -293,31 +293,20 @@ async fn main(spawner: Spawner) -> ! {
     msg_with_header.write_all(msg.buffer.as_slice()).unwrap();
     info!("hello_msg {:x?}", &msg_with_header.buffer);
 
-    // send to individual addresses for now as iphone hotspot doesnt allow udp broadcast
-    for i in 1..=14 {
-        let mut this_addr = broadcast;
-        match &mut this_addr.addr {
-            IpAddress::Ipv4(addr) => {
-                addr.0 = [172, 20, 10, i];
-                addr.0 = [192, 168, 5, 40];
-                addr.0 = [100, 115, 92, 196];
-                // addr.0[3] = i;
-            }
-            _ => {}
-        }
-        socket
-            .send_to(msg_with_header.buffer.as_slice(), this_addr)
-            .await
-            .unwrap();
-        info!("sent to {this_addr:?}");
-    }
-
     socket
         .send_to(msg_with_header.buffer.as_slice(), broadcast)
         .await
         .unwrap();
-    let (len, src) = socket.recv_from(&mut buf).await.unwrap();
-    info!("udp rx from {src:?}: {:?}", &buf[..len]);
+    loop {
+        let (len, src) = socket.recv_from(&mut buf).await.unwrap();
+        trace!("udp rx from {src:?}: {len:} bytes");
+        let mut reader = &buf[..len];
+        let header = Header::from_reader(&mut reader);
+        trace!("udp rx header: {header:?}");
+        if header.frame_offset == 0 {
+            info!("{:x?}", buf);
+        }
+    }
 
     loop {
         let res = select4(
@@ -467,6 +456,7 @@ enum MessageType {
     BrainHello = 0u8,
 }
 
+#[derive(Debug, Clone)]
 struct Header {
     id: i16,
     frame_size: i16,
@@ -495,6 +485,22 @@ impl Header {
         w.write_all(&self.msg_size.to_be_bytes()).unwrap();
         w.write_all(&self.frame_offset.to_be_bytes()).unwrap();
         buf
+    }
+    fn from_reader(r: &mut impl Read) -> Self {
+        let mut id_bytes = [0u8; 2];
+        r.read_exact(&mut id_bytes).unwrap();
+        let mut frame_size = [0u8; 2];
+        r.read_exact(&mut frame_size).unwrap();
+        let mut msg_size = [0u8; size_of::<i32>()];
+        r.read_exact(&mut msg_size).unwrap();
+        let mut frame_offset = [0u8; size_of::<i32>()];
+        r.read_exact(&mut frame_offset).unwrap();
+        Self {
+            id: i16::from_be_bytes(id_bytes),
+            frame_size: i16::from_be_bytes(frame_size),
+            msg_size: i32::from_be_bytes(msg_size),
+            frame_offset: i32::from_be_bytes(frame_offset),
+        }
     }
 }
 

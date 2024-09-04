@@ -17,8 +17,8 @@ default = [
     "esp-wifi/wifi-default",
     "esp-wifi/wifi",
     "esp-wifi/utils",
-  # "esp-wifi/esp-now",
-    "esp-wifi/wifi-logs",
+    # "esp-wifi/esp-now",
+    # "esp-wifi/wifi-logs",
     "esp-wifi/log",
 ]
 async = ["esp-hal/async"]
@@ -132,7 +132,13 @@ static_cell = { version = "2.1.0", features = ["nightly"] }
 smart-leds = "0.4.0"
 ws2812-async = "0.2.0"
 xtensa-lx-rt = { version = "0.17", features = ["float-save-restore"] }
-embassy-net = { version = "0.4.0", features = ["dhcpv4", "udp", "proto-ipv4", "proto-ipv6", "tcp"] }
+embassy-net = { version = "0.4.0", features = [
+    "dhcpv4",
+    "udp",
+    "proto-ipv4",
+    "proto-ipv6",
+    "tcp",
+] }
 byteorder = { version = "1.5.0", default-features = false }
 
 [profile.dev]
