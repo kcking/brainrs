@@ -171,13 +171,13 @@ async fn main(spawner: Spawner) -> ! {
         )
     );
 
-    let SSID = "io";
-    let PASSWORD = "nospaces";
+    let ssid = env!("WIFI_SSID");
+    let password = env!("WIFI_PASSWORD");
     // let client_config = Configuration::Mixed(
     //     ClientConfiguration {
     //         // ssid: SSID.try_into().unwrap(),
     //         ssid: "Kevin's iPhone".try_into().unwrap(),
-    //         password: "qwertyui".try_into().unwrap(),
+    //         password: "redacted".try_into().unwrap(),
     //         // password: PASSWORD.try_into().unwrap(),
     //         ..Default::default()
     //     },
@@ -187,8 +187,8 @@ async fn main(spawner: Spawner) -> ! {
     //     },
     // );
     let client_config = Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        password: PASSWORD.try_into().unwrap(),
+        ssid: ssid.try_into().unwrap(),
+        password: password.try_into().unwrap(),
         ..Default::default()
     });
 
