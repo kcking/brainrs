@@ -11,6 +11,7 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 #![feature(async_closure)]
+#![feature(array_chunks)]
 
 extern crate alloc;
 
@@ -212,7 +213,6 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    let mut ticker = Ticker::every(Duration::from_secs(5));
     let mut led_ticker = Ticker::every(Duration::from_millis(33));
     let mut led_colors = [Hsv {
         hue: 0,
@@ -297,20 +297,26 @@ async fn main(spawner: Spawner) -> ! {
         .send_to(msg_with_header.buffer.as_slice(), broadcast)
         .await
         .unwrap();
-    loop {
-        let (len, src) = socket.recv_from(&mut buf).await.unwrap();
-        trace!("udp rx from {src:?}: {len:} bytes");
-        let mut reader = &buf[..len];
-        let header = Header::from_reader(&mut reader);
-        trace!("udp rx header: {header:?}");
-        if header.frame_offset == 0 {
-            info!("{:x?}", buf);
-        }
-    }
+    // loop {
+    //     let (len, src) = socket.recv_from(&mut buf).await.unwrap();
+    //     trace!("udp rx from {src:?}: {len:} bytes");
+    //     let mut reader = &buf[..len];
+    //     let header = Header::from_reader(&mut reader);
+    //     if header.frame_offset == 0 && header.id % 100 == 0 {
+    //         info!("{:x?}", reader);
+    //         info!("udp rx header: {header:?}");
+    //     }
+    // }
+
+    let mut next_led_idx = None::<usize>;
+    // msg_id, initial_led_bytes
+    // These are used to know where to write the incoming bytes into the LED buffer, regardless of
+    // which order packages from the same message id come in.
+    let mut led_parse_state = None::<(i16, usize)>;
 
     loop {
         let res = select4(
-            ticker.next(),
+            socket.recv_from(&mut buf),
             Timer::after_millis(1000),
             led_ticker.next(),
             button_press_signal.wait(),
@@ -318,24 +324,61 @@ async fn main(spawner: Spawner) -> ! {
         .await;
 
         match res {
-            Either4::First(_) => {}
+            Either4::First(r) => {
+                let Ok((recv_len, _)) = r else { continue };
+                let mut reader = &buf[..recv_len];
+                let header = Header::from_reader(&mut reader);
+                if header.frame_offset == 0 {
+                    // TODO: handle messages longer than one packet
+                    let msg_type = reader[0];
+                    reader = &reader[1..];
+                    /*
+                     * Brain Panel Shade message format:
+                     * 12byte header | 0x01 (message type) | 1byte bool hasPongData | optional bytearray (int + bytes) |
+                     * | bytearray shader descrption  (2-bytes: 0x01 (PIXEL type),  0x01 (encoding RGB))
+                     */
+                    let has_pong = reader[0] > 0;
+                    reader = &reader[1..];
+                    if has_pong {
+                        let pong_len = i32::from_be_bytes(reader[..4].try_into().unwrap());
+                        reader = &reader[4..];
+                        reader = &reader[pong_len as usize..];
+                    }
+                    let desc_len = i32::from_be_bytes(reader[..4].try_into().unwrap());
+                    reader = &reader[4..];
+                    let desc = &reader[..desc_len as usize];
+                    reader = &reader[desc_len as usize..];
+                    led_parse_state = Some((header.id, reader.len()));
+                    if desc == &[1, 1] {
+                        for (i, [r, b, g]) in reader.array_chunks().enumerate() {
+                            if i < rbg_leds.len() {
+                                rbg_leds[i] = RGB::<u8>::new(*r, *g, *b);
+                            }
+                        }
+                    }
+                }
+                // match &mut led_parse_state {
+                //     Some(st) => if st.0 == header.id {},
+                //     None => todo!(),
+                // }
+            }
             Either4::Second(r) => {}
             Either4::Third(_) => {
-                let val = if let Some(last_rx) = last_rx {
-                    let secs_since = last_rx.elapsed().as_millis() as f32 / 1000f32;
-                    if secs_since > 10. {
-                        255
-                    } else {
-                        (255f32 * ((0.25f32 - secs_since) / 0.25f32).max(0f32)) as u8
-                    }
-                } else {
-                    255
-                };
-                for (idx, c) in led_colors.iter_mut().enumerate() {
-                    c.hue = c.hue.wrapping_add(1);
-                    c.val = val;
-                    rbg_leds[idx] = hsv2rgb(*c);
-                }
+                // let val = if let Some(last_rx) = last_rx {
+                //     let secs_since = last_rx.elapsed().as_millis() as f32 / 1000f32;
+                //     if secs_since > 10. {
+                //         255
+                //     } else {
+                //         (255f32 * ((0.25f32 - secs_since) / 0.25f32).max(0f32)) as u8
+                //     }
+                // } else {
+                //     255
+                // };
+                // for (idx, c) in led_colors.iter_mut().enumerate() {
+                //     c.hue = c.hue.wrapping_add(1);
+                //     c.val = val;
+                //     rbg_leds[idx] = hsv2rgb(*c);
+                // }
                 _ = ws.write(rbg_leds.clone().into_iter()).await;
             }
             Either4::Fourth(_) => {
@@ -424,9 +467,6 @@ async fn connection(mut controller: WifiController<'static>) {
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
-        // }
-        //     _ => {}
-        // }
     }
 }
 #[embassy_executor::task]
@@ -446,6 +486,7 @@ async fn button_interrupt(
     );
     loop {
         button.wait_for_falling_edge().await;
+        info!("button press");
         control.signal(true);
     }
 }
@@ -454,6 +495,7 @@ async fn button_interrupt(
 #[derive(Copy, Clone)]
 enum MessageType {
     BrainHello = 0u8,
+    BrainPanelShade = 1u8,
 }
 
 #[derive(Debug, Clone)]
@@ -580,4 +622,23 @@ fn init_heap() {
 #[embassy_executor::task]
 async fn ap_task(stack: &'static Stack<WifiDevice<'static, WifiApDevice>>) {
     stack.run().await
+}
+
+/*
+    enum class Encoding : uint8_t {
+        DIRECT_ARGB = 0,
+        DIRECT_RGB,
+        INDEXED_2,
+        INDEXED_4,
+        INDEXED_16
+    };
+*/
+
+#[repr(u8)]
+enum PixelShaderEncoding {
+    DirectArgb = 0,
+    DirectRgb,
+    Indexed2,
+    Indexed4,
+    Indexed16,
 }
