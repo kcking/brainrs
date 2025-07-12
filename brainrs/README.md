@@ -8,6 +8,8 @@
 
 ## Random dev notes
 
+- WIFI creds must be specified in env vars at compile (`WIFI_SSID` and `WIFI_PASSWORD`). One could add these to the end of their `~/export-esp.sh` script for convenience.
+
 - if building for an xtensa board, `cargo install -f espup && espup install && . ~/export-esp.sh`
   - if you see `error: linker`xtensa-esp32-elf-gcc`not found`, `. ~/export-esp.sh` is the answer :)
 `
