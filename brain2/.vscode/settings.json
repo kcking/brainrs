@@ -1,0 +1,4 @@
+{
+  // fixes test crate not found error
+  "rust-analyzer.cargo.allTargets": false
+}
