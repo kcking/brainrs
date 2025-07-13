@@ -37,8 +37,6 @@ embassy-executor = { version = "0.7", features = ["executor-thread", "arch-std" 
 
 # NOTE: if you use embassy-time with embassy-executor you don't need the generic-queue-8 feature
 
-# --- Temporary workaround for embassy-executor < 0.8 ---
-# esp-idf-svc = { version = "0.51", features = ["embassy-time-driver", "embassy-sync"] }
 critical-section = { version = "1.2.0", features = ["restore-state-bool"], default-features = false }
 static_cell = "2.1.1"
 anyhow = "1.0.98"

@@ -110,7 +110,6 @@ async fn connect_network() -> anyhow::Result<impl NetworkInterface + 'static> {
     let pins = peripherals.pins;
     let sys_loop = EspSystemEventLoop::take()?;
     let timer_service = EspTaskTimerService::new()?;
-    let nvs = EspDefaultNvsPartition::take()?;
 
     {
         // Make sure to configure ethernet in sdkconfig and adjust the parameters below for your hardware
@@ -151,6 +150,7 @@ async fn connect_network() -> anyhow::Result<impl NetworkInterface + 'static> {
     }
 
     // {
+    //     let nvs = EspDefaultNvsPartition::take()?;
     //     let mut wifi = AsyncWifi::wrap(
     //         EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
     //         sys_loop,
