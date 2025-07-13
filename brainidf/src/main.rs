@@ -94,6 +94,14 @@ async fn keep_wifi_connected() {
             .await
             .unwrap();
 
+        let rx_buf = &mut [0u8; 32];
+        loop {
+            if let Ok((count, from)) = udp_sock.recv_from(rx_buf).await {
+                // info!("rx {count} bytes from {from:?}");
+                // info!("{:x?}", &rx_buf[..count]);
+            }
+        }
+
         while network_if.is_up() {
             embassy_time::Delay.delay_ms(1000).await;
         }
