@@ -64,26 +64,26 @@ fn inner_main() {
 
 // #[embassy_executor::task]
 async fn keep_wifi_connected() {
+    let mut msg_id = 0i16;
     loop {
-        let wifi = connect_wifi().await.unwrap();
-        let bcast_addr = wifi.get_broadcast();
+        let network_if = connect_network().await.unwrap();
+        let bcast_addr = network_if.get_broadcast();
 
         info!("broadcast addr: {bcast_addr:?}");
 
-        let mac = wifi.get_mac();
+        let mac = network_if.get_mac();
 
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
         let mut msg = Vec::with_capacity(128);
         proto::write_hello_msg(&mut msg, &brain_id);
 
-        let mut msg_id = 0i16;
         let header = Header::from_payload(msg_id, &msg);
         let mut msg_with_header = Vec::with_capacity(128);
         msg_with_header.extend_from_slice(&header.to_bytes());
         msg_with_header.extend(msg);
 
-        msg_id += 1;
+        msg_id = msg_id.wrapping_add_unsigned(1);
 
         info!("hello_msg {:x?}", &msg_with_header);
 
@@ -94,13 +94,13 @@ async fn keep_wifi_connected() {
             .await
             .unwrap();
 
-        while wifi.is_up() {
+        while network_if.is_up() {
             embassy_time::Delay.delay_ms(1000).await;
         }
     }
 }
 
-async fn connect_wifi() -> anyhow::Result<impl NetworkInterface + 'static> {
+async fn connect_network() -> anyhow::Result<impl NetworkInterface + 'static> {
     let peripherals = Peripherals::take()?;
     let pins = peripherals.pins;
     let sys_loop = EspSystemEventLoop::take()?;
