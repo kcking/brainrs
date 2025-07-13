@@ -3,6 +3,7 @@ esp-idf-svc version of the brain. synthesizes [examples](https://github.com/esp-
 The main reason we need esp-idf-svc is for RMII ethernet support.
 
 - should we use same ID for both wifi and eth? (MAC addresses are different between the two interfaces).
+- still had 1 spurious IllegalInstruction with just a UDP read-loop, have to investigate more.
 
 Run
 
