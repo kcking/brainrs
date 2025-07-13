@@ -43,7 +43,7 @@ critical-section = { version = "1.2.0", features = ["restore-state-bool"], defau
 static_cell = "2.1.1"
 anyhow = "1.0.98"
 embedded-hal-async = "1.0.0"
-async-io = "2.4.1"
+async-io = { version = "0.3.0", package = "async-io-mini" }
 
 [build-dependencies]
 embuild = "0.33"
