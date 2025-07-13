@@ -7,12 +7,13 @@ use std::{
 
 use async_io::Async;
 use embassy_executor::{Executor, Spawner};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Delay, Duration, Timer};
 
 use embedded_hal_async::delay::DelayNs as _;
 use esp_idf_svc::{
+    eth::{AsyncEth, EspEth, EthDriver, RmiiEth},
     eventloop::EspSystemEventLoop,
-    hal::prelude::Peripherals,
+    hal::{gpio, prelude::Peripherals},
     nvs::EspDefaultNvsPartition,
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
@@ -29,11 +30,11 @@ const PINKY_PORT: u16 = 8002;
 
 #[embassy_executor::task]
 async fn run(spawner: Spawner) {
-    spawner.spawn(keep_wifi_connected()).unwrap();
-    loop {
-        log::info!("Hello, world!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
+    // spawner.spawn(keep_wifi_connected()).unwrap();
+    // loop {
+    //     log::info!("Hello, world!");
+    //     Timer::after(Duration::from_secs(1)).await;
+    // }
 }
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
@@ -43,7 +44,7 @@ fn main() {
     let _mounted_eventfs = esp_idf_svc::io::vfs::MountedEventfs::mount(5).unwrap();
 
     std::thread::Builder::new()
-        .stack_size(60000)
+        .stack_size(120000)
         .spawn(inner_main)
         .unwrap()
         .join()
@@ -53,26 +54,23 @@ fn main() {
 fn inner_main() {
     let exec = EXECUTOR.init(Executor::new());
 
-    let _ = exec.run(|spawner| {
-        spawner.spawn(run(spawner)).unwrap();
-    });
+    async_io::block_on(keep_wifi_connected());
+
+    // let _ = exec.run(|spawner| {
+    //     spawner.spawn(run(spawner)).unwrap();
+    // });
     // spawner.spawn(keep_wifi_connected()).unwrap();
 }
 
-#[embassy_executor::task]
+// #[embassy_executor::task]
 async fn keep_wifi_connected() {
     loop {
         let wifi = connect_wifi().await.unwrap();
-        let ip_info = wifi.wifi().sta_netif().get_ip_info().unwrap();
-        let bcast_addr =
-            Ipv4Addr::from(ip_info.ip.to_bits() | (!Ipv4Addr::from(ip_info.subnet.mask).to_bits()));
+        let bcast_addr = wifi.get_broadcast();
 
         info!("broadcast addr: {bcast_addr:?}");
 
-        let mac = wifi
-            .wifi()
-            .get_mac(esp_idf_svc::wifi::WifiDeviceId::Sta)
-            .unwrap();
+        let mac = wifi.get_mac();
 
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
@@ -96,43 +94,141 @@ async fn keep_wifi_connected() {
             .await
             .unwrap();
 
-        while wifi.is_up().unwrap_or(false) {
+        while wifi.is_up() {
             embassy_time::Delay.delay_ms(1000).await;
         }
     }
 }
 
-async fn connect_wifi() -> anyhow::Result<AsyncWifi<EspWifi<'static>>> {
+async fn connect_wifi() -> anyhow::Result<impl NetworkInterface + 'static> {
     let peripherals = Peripherals::take()?;
+    let pins = peripherals.pins;
     let sys_loop = EspSystemEventLoop::take()?;
     let timer_service = EspTaskTimerService::new()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    let mut wifi = AsyncWifi::wrap(
-        EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
-        sys_loop,
-        timer_service,
+    // Make sure to configure ethernet in sdkconfig and adjust the parameters below for your hardware
+    let eth_driver = EthDriver::new_rmii(
+        peripherals.mac,
+        pins.gpio25,
+        pins.gpio26,
+        pins.gpio27,
+        pins.gpio23,
+        pins.gpio22,
+        pins.gpio21,
+        pins.gpio19,
+        pins.gpio18,
+        esp_idf_svc::eth::RmiiClockConfig::<gpio::Gpio0, gpio::Gpio16, gpio::Gpio17>::OutputInvertedGpio17(
+            pins.gpio17,
+        ),
+        Some(pins.gpio15),
+        esp_idf_svc::eth::RmiiEthChipset::LAN87XX,
+        Some(0),
+        sys_loop.clone(),
+    )?;
+    let mut eth = AsyncEth::wrap(
+        EspEth::wrap(eth_driver)?,
+        sys_loop.clone(),
+        timer_service.clone(),
     )?;
 
-    let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        bssid: None,
-        auth_method: AuthMethod::WPA2Personal,
-        password: PASSWORD.try_into().unwrap(),
-        channel: None,
-        ..Default::default()
-    });
+    eth.start().await?;
+    info!("Eth started");
 
-    wifi.set_configuration(&wifi_configuration)?;
+    eth.wait_connected().await?;
+    info!("Eth connected");
+    eth.wait_netif_up().await?;
 
-    wifi.start().await?;
-    info!("Wifi started");
+    info!("Eth netif_up");
 
-    wifi.connect().await?;
-    info!("Wifi connected");
+    return Ok(eth);
 
-    wifi.wait_netif_up().await?;
-    info!("Wifi netif up");
+    // Delay.delay_ms(1_000_000).await;
 
-    Ok(wifi)
+    // let mut wifi = AsyncWifi::wrap(
+    //     EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
+    //     sys_loop,
+    //     timer_service,
+    // )?;
+
+    // let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
+    //     ssid: SSID.try_into().unwrap(),
+    //     bssid: None,
+    //     auth_method: AuthMethod::WPA2Personal,
+    //     password: PASSWORD.try_into().unwrap(),
+    //     channel: None,
+    //     ..Default::default()
+    // });
+
+    // wifi.set_configuration(&wifi_configuration)?;
+
+    // wifi.start().await?;
+    // info!("Wifi started");
+
+    // wifi.connect().await?;
+    // info!("Wifi connected");
+
+    // wifi.wait_netif_up().await?;
+    // info!("Wifi netif up");
+
+    // Ok(wifi)
+}
+
+trait NetworkInterface {
+    fn get_ip(&self) -> Ipv4Addr;
+    fn get_subnet(&self) -> Ipv4Addr;
+    fn get_broadcast(&self) -> Ipv4Addr {
+        let bcast_addr = Ipv4Addr::from(self.get_ip().to_bits() | (!self.get_subnet()).to_bits());
+        bcast_addr
+    }
+    fn is_up(&self) -> bool;
+    fn get_mac(&self) -> [u8; 6];
+}
+
+impl<'a> NetworkInterface for AsyncWifi<EspWifi<'a>> {
+    fn get_ip(&self) -> Ipv4Addr {
+        self.wifi().sta_netif().get_ip_info().unwrap().ip
+    }
+
+    fn get_subnet(&self) -> Ipv4Addr {
+        self.wifi()
+            .sta_netif()
+            .get_ip_info()
+            .unwrap()
+            .subnet
+            .mask
+            .into()
+    }
+
+    fn is_up(&self) -> bool {
+        self.wifi().is_up().unwrap()
+    }
+
+    fn get_mac(&self) -> [u8; 6] {
+        self.wifi()
+            .get_mac(esp_idf_svc::wifi::WifiDeviceId::Sta)
+            .unwrap()
+    }
+}
+
+impl<'a> NetworkInterface for AsyncEth<EspEth<'a, RmiiEth>> {
+    fn get_ip(&self) -> Ipv4Addr {
+        self.eth().netif().get_ip_info().unwrap().ip
+    }
+
+    fn get_subnet(&self) -> Ipv4Addr {
+        info!(
+            "subnet mask: {}",
+            self.eth().netif().get_ip_info().unwrap().subnet.mask.0
+        );
+        self.eth().netif().get_ip_info().unwrap().subnet.mask.into()
+    }
+
+    fn is_up(&self) -> bool {
+        self.eth().is_up().unwrap()
+    }
+
+    fn get_mac(&self) -> [u8; 6] {
+        self.eth().netif().get_mac().unwrap()
+    }
 }
