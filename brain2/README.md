@@ -2,6 +2,11 @@
 
 > sparklemotion brain rust impl
 
+## TODO
+
+- implement ethernet
+  - looks like we need to switch to esp-idf-svc (but can still run embassy from there if we want) [matrix chat](https://matrix.to/#/!YoLPkieCYHGzdjUhOK:matrix.org/$pcFvtrMFgvJH10Aq6UyI7J2C5-KZNANFy5rOng4e3fs?via=matrix.org&via=beeper.com&via=tchncs.de)
+
 ## Questions
 
 - What happens when messageid overflows? it is an i16

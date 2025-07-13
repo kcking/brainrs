@@ -22,7 +22,9 @@ extern crate alloc;
 
 use alloc::format;
 use embassy_executor::Spawner;
+use embassy_futures::select::select;
 use embassy_net::{Runner, Stack, StackResources, tcp::TcpSocket, udp::PacketMetadata};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::delay::{self, DelayNs};
 use embedded_io::Write as _;
@@ -103,7 +105,7 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(connection(controller)).ok();
     spawner.spawn(net_task(runner)).ok();
-    spawner.spawn(udp_task(stack.clone())).ok();
+    spawner.spawn(udp_task(stack.clone(), todo!())).ok();
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -167,10 +169,17 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn udp_task(stack: Stack<'static>) {
-    info!("is link up {}", stack.is_link_up());
+async fn udp_task(
+    stack: Stack<'static>,
+    udp_send_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, (), 16>,
+) {
+    let mut my_sta_mac = [0u8; 6];
+    sta_mac(&mut my_sta_mac);
+    let mac = my_sta_mac;
+    let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
+    info!("brain_id = {brain_id}");
 
-    //  TODO: handle connection lifecycle
+    //  TODO: handle connection lifecycle / retry on network error
     //  Default broadcast address
     let mut broadcast: embassy_net::IpEndpoint = "255.255.255.255:8002".parse().unwrap();
     stack.wait_config_up().await;
@@ -194,12 +203,6 @@ async fn udp_task(stack: Stack<'static>) {
     );
     socket.bind(8003).unwrap();
 
-    let mut my_sta_mac = [0u8; 6];
-    sta_mac(&mut my_sta_mac);
-    let mac = my_sta_mac;
-    let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
-    info!("brain_id = {brain_id}");
-
     let mut w = VecWriter { buffer: Vec::new() };
 
     proto::write_hello_msg(&mut w, &brain_id);
@@ -221,9 +224,10 @@ async fn udp_task(stack: Stack<'static>) {
         .await
         .unwrap();
 
+    let mut rx_buf = [0; 4096];
+
     loop {
-        // loop forever
-        embassy_time::Delay.delay_ms(1000).await;
+        select(socket.recv_from(&mut rx_buf), udp_send_rx.receive());
     }
 }
 
