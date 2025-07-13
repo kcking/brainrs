@@ -1,0 +1,1 @@
+esp-idf-svc version of the brain. synthesizes [examples](https://github.com/esp-rs/esp-idf-svc/blob/e0d9c76e83122ac991526a6c6f296b12cf698258/examples/tcp_async.rs) and some chatter in the esp-rs matrix room.
