@@ -5,17 +5,26 @@ pub mod proto;
 use std::{
     io::Write,
     net::{Ipv4Addr, UdpSocket},
+    time::Instant,
 };
 
 use async_io::Async;
 use embassy_executor::{Executor, Spawner};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Delay, Duration, Timer};
 
 use embedded_hal_async::delay::DelayNs as _;
 use esp_idf_svc::{
     eth::{AsyncEth, EspEth, EthDriver, RmiiEth},
     eventloop::EspSystemEventLoop,
-    hal::{gpio, prelude::Peripherals},
+    hal::{
+        cpu::Core,
+        gpio::{self, OutputPin},
+        peripheral::Peripheral,
+        prelude::Peripherals,
+        rmt::RmtChannel,
+        task::block_on,
+    },
     nvs::EspDefaultNvsPartition,
     sys::{esp_mac_type_t_ESP_MAC_WIFI_STA, esp_read_mac},
     timer::EspTaskTimerService,
@@ -37,6 +46,7 @@ const PASSWORD: &str = env!("PASSWORD");
 const BRAIN_PORT: u16 = 8003;
 const PINKY_PORT: u16 = 8002;
 
+// The current brain firmware only uses data CH1, though it has a CH2 as well.
 const LED_CH1_GPIO: u8 = 32;
 const LED_CH2_GPIO: u8 = 2;
 
@@ -49,6 +59,7 @@ async fn run(spawner: Spawner) {
     // }
 }
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+static LED_FRAME_SIGNAL: Signal<CriticalSectionRawMutex, Vec<RGB8>> = Signal::new();
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -67,6 +78,24 @@ fn inner_main() {
     });
 }
 
+// This task is blocking since esp-hal-idf doesn't support non-blocking writes
+// to RMT.
+fn led_write_task(
+    data_gpio: impl Peripheral<P = impl OutputPin>,
+    rmt: impl Peripheral<P = impl RmtChannel>,
+) {
+    let mut ws2812 = Ws2812Esp32Rmt::new(rmt, data_gpio).unwrap();
+    // reset to black
+    ws2812
+        .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
+        .unwrap();
+    loop {
+        let data = block_on(LED_FRAME_SIGNAL.wait());
+        info!("got led frame!");
+        ws2812.write_nocopy(data).unwrap();
+    }
+}
+
 #[embassy_executor::task]
 async fn keep_wifi_connected() {
     //  TODO: lift this even higher so we can give some pins to other tasks.
@@ -76,12 +105,7 @@ async fn keep_wifi_connected() {
 
     let led_pin = peripherals.pins.gpio32;
     let channel = peripherals.rmt.channel0;
-    let mut ws2812 = Ws2812Esp32Rmt::new(channel, led_pin).unwrap();
-    // reset to black
-    ws2812
-        .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
-        .unwrap();
-
+    std::thread::spawn(move || led_write_task(led_pin, channel));
     let mut led_state = LedState::new(2048);
 
     let network_if = network_interfaces::setup_eth_driver(
@@ -116,6 +140,7 @@ async fn keep_wifi_connected() {
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
         let mut msg = Vec::with_capacity(128);
+        //  TODO: Send periodic hello, especially after not hearing from pinky for some time (5s?).
         proto::write_hello_msg(&mut msg, &brain_id);
 
         let header = Header::from_payload(msg_id, &msg);
@@ -136,15 +161,14 @@ async fn keep_wifi_connected() {
 
         let rx_buf = &mut [0u8; 4096];
 
-        // The current brain firmware only uses data CH1, though it has a CH2 as well.
-
         loop {
             if let Ok((count, _from)) = udp_sock.recv_from(rx_buf).await {
                 let mut rx_packet = &rx_buf[..count];
                 let header = Header::from_reader(&mut rx_packet);
                 if led_state.on_message(header, rx_packet) {
                     let leds = led_state.get_leds();
-                    ws2812.write_nocopy(leds.iter().cloned()).unwrap();
+                    info!("sent led frame!");
+                    LED_FRAME_SIGNAL.signal(leds);
                 }
             }
         }
@@ -173,13 +197,14 @@ impl LedState {
             pixel_count: None,
         }
     }
-    pub fn get_leds(&self) -> &[RGB8] {
+    pub fn get_leds(&self) -> Vec<RGB8> {
         let pixels = self.leds.as_slice().as_pixels();
         if let Some(pixel_count) = self.pixel_count {
             &pixels[..pixel_count.min(pixels.len())]
         } else {
             pixels
         }
+        .into()
     }
     // Returns: whether caller should write LED data out to RMT
     pub fn on_message(&mut self, header: Header, mut rx_packet: &[u8]) -> bool {
