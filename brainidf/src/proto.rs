@@ -136,6 +136,14 @@ impl Header {
     }
 */
 
+pub fn create_hello_msg(msg_id: i16, brain_id: &str) -> Vec<u8> {
+    let mut out = vec![];
+    write_hello_msg(&mut out, brain_id);
+    let hdr = Header::from_payload(msg_id, &out);
+    out.splice(0..0, hdr.to_bytes());
+    out
+}
+
 pub fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
     /*
             writeByte(BRAIN_HELLO);

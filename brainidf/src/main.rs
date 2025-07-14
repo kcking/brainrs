@@ -30,7 +30,7 @@ use esp_idf_svc::{
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
 };
-use log::{info, trace};
+use log::{error, info, trace};
 use rgb::AsPixels;
 use smart_leds::RGB8;
 use static_cell::StaticCell;
@@ -38,7 +38,7 @@ use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_network},
-    proto::{Header, MessageType},
+    proto::{Header, MessageType, create_hello_msg},
 };
 
 const SSID: &str = env!("SSID");
@@ -51,6 +51,7 @@ const LED_CH1_GPIO: u8 = 32;
 const LED_CH2_GPIO: u8 = 2;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+// A `Signal` ensures only one copy of the LEDs is in flight at a time.
 static LED_FRAME_SIGNAL: Signal<CriticalSectionRawMutex, Vec<RGB8>> = Signal::new();
 
 fn main() {
@@ -67,6 +68,7 @@ fn main() {
 
 // This task is blocking since esp-hal-idf doesn't support non-blocking writes
 // to RMT.
+// TODO: consider pinning this task to Core1
 fn led_write_task(
     data_gpio: impl Peripheral<P = impl OutputPin>,
     rmt: impl Peripheral<P = impl RmtChannel>,
@@ -148,14 +150,33 @@ async fn main_task() {
 
         let rx_buf = &mut [0u8; 4096];
 
+        let pinky_liveness_ttl = Duration::from_millis(5_000);
+
         loop {
-            if let Ok((count, _from)) = udp_sock.recv_from(rx_buf).await {
-                let mut rx_packet = &rx_buf[..count];
-                let header = Header::from_reader(&mut rx_packet);
-                if led_state.on_message(header, rx_packet) {
-                    let leds = led_state.get_leds();
-                    trace!("sent led frame");
-                    LED_FRAME_SIGNAL.signal(leds);
+            let udp_rx_with_timeout =
+                embassy_time::with_timeout(pinky_liveness_ttl, udp_sock.recv_from(rx_buf));
+            match udp_rx_with_timeout.await {
+                Ok(Ok((count, _from))) => {
+                    let mut rx_packet = &rx_buf[..count];
+                    let header = Header::from_reader(&mut rx_packet);
+                    if led_state.on_message(header, rx_packet) {
+                        let leds = led_state.get_leds();
+                        trace!("sent led frame");
+                        LED_FRAME_SIGNAL.signal(leds);
+                    }
+                }
+                Ok(Err(e)) => {
+                    //  TODO: handle network rx error, maybe just panic?
+                    error!("Unhandled network rx error {e:?}");
+                }
+                Err(_) => {
+                    info!("Haven't heard from pinky in {pinky_liveness_ttl:?}, sending hello");
+                    let hello_msg = create_hello_msg(msg_id, &brain_id);
+                    msg_id = msg_id.wrapping_add_unsigned(1);
+                    udp_sock
+                        .send_to(&hello_msg, (bcast_addr, PINKY_PORT))
+                        .await
+                        .unwrap();
                 }
             }
         }
