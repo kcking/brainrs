@@ -45,6 +45,7 @@ const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const BRAIN_PORT: u16 = 8003;
 const PINKY_PORT: u16 = 8002;
+const MAX_LEDS: usize = 2048;
 
 // The current brain firmware only uses data CH1, though it has a CH2 as well.
 const LED_CH1_GPIO: u8 = 32;
@@ -95,7 +96,7 @@ async fn main_task() {
     let led_pin = peripherals.pins.gpio32;
     let channel = peripherals.rmt.channel0;
     std::thread::spawn(move || led_write_task(led_pin, channel));
-    let mut led_state = LedState::new(2048);
+    let mut led_state = LedState::new(MAX_LEDS);
 
     let network_if = network_interfaces::setup_eth_driver(
         peripherals.mac,
@@ -128,23 +129,15 @@ async fn main_task() {
 
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
-        let mut msg = Vec::with_capacity(128);
-        //  TODO: Send periodic hello, especially after not hearing from pinky for some time (5s?).
-        proto::write_hello_msg(&mut msg, &brain_id);
-
-        let header = Header::from_payload(msg_id, &msg);
-        let mut msg_with_header = Vec::with_capacity(128);
-        msg_with_header.extend_from_slice(&header.to_bytes());
-        msg_with_header.extend(msg);
-
+        let hello_msg = create_hello_msg(msg_id, &brain_id);
         msg_id = msg_id.wrapping_add_unsigned(1);
 
-        info!("hello_msg {:x?}", &msg_with_header);
+        info!("hello_msg {:x?}", &hello_msg);
 
         let udp_sock = Async::<UdpSocket>::bind(([0, 0, 0, 0], BRAIN_PORT)).unwrap();
 
         udp_sock
-            .send_to(&msg_with_header, (bcast_addr, PINKY_PORT))
+            .send_to(&hello_msg, (bcast_addr, PINKY_PORT))
             .await
             .unwrap();
 
