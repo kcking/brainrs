@@ -30,7 +30,7 @@ use esp_idf_svc::{
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
 };
-use log::info;
+use log::{info, trace};
 use rgb::AsPixels;
 use smart_leds::RGB8;
 use static_cell::StaticCell;
@@ -50,14 +50,6 @@ const PINKY_PORT: u16 = 8002;
 const LED_CH1_GPIO: u8 = 32;
 const LED_CH2_GPIO: u8 = 2;
 
-#[embassy_executor::task]
-async fn run(spawner: Spawner) {
-    // spawner.spawn(keep_wifi_connected()).unwrap();
-    // loop {
-    //     log::info!("Hello, world!");
-    //     Timer::after(Duration::from_secs(1)).await;
-    // }
-}
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 static LED_FRAME_SIGNAL: Signal<CriticalSectionRawMutex, Vec<RGB8>> = Signal::new();
 
@@ -66,15 +58,10 @@ fn main() {
     esp_idf_svc::log::EspLogger::initialize_default();
     let _mounted_eventfs = esp_idf_svc::io::vfs::MountedEventfs::mount(5).unwrap();
 
-    inner_main();
-}
-
-fn inner_main() {
     let exec = EXECUTOR.init(Executor::new());
 
     let _ = exec.run(|spawner| {
-        // spawner.spawn(run(spawner)).unwrap();
-        spawner.spawn(keep_wifi_connected()).unwrap();
+        spawner.spawn(main_task()).unwrap();
     });
 }
 
@@ -85,19 +72,19 @@ fn led_write_task(
     rmt: impl Peripheral<P = impl RmtChannel>,
 ) {
     let mut ws2812 = Ws2812Esp32Rmt::new(rmt, data_gpio).unwrap();
-    // reset to black
+    // reset to black at start
     ws2812
         .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
         .unwrap();
     loop {
         let data = block_on(LED_FRAME_SIGNAL.wait());
-        info!("got led frame!");
+        trace!("got led frame");
         ws2812.write_nocopy(data).unwrap();
     }
 }
 
 #[embassy_executor::task]
-async fn keep_wifi_connected() {
+async fn main_task() {
     //  TODO: lift this even higher so we can give some pins to other tasks.
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
@@ -167,7 +154,7 @@ async fn keep_wifi_connected() {
                 let header = Header::from_reader(&mut rx_packet);
                 if led_state.on_message(header, rx_packet) {
                     let leds = led_state.get_leds();
-                    info!("sent led frame!");
+                    trace!("sent led frame");
                     LED_FRAME_SIGNAL.signal(leds);
                 }
             }
