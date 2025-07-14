@@ -19,3 +19,6 @@ CONFIG_ETH_DMA_BUFFER_SIZE=512
 CONFIG_ETH_DMA_RX_BUFFER_NUM=10
 CONFIG_ETH_DMA_TX_BUFFER_NUM=10
 
+# For async spi support
+# https://github.com/esp-rs/esp-idf-hal/issues/486
+CONFIG_SPI_MASTER_ISR_IN_IRAM=n

@@ -28,10 +28,10 @@ pub enum MessageType {
 
 #[derive(Debug, Clone)]
 pub struct Header {
-    id: i16,
-    frame_size: i16,
-    msg_size: i32,
-    frame_offset: i32,
+    pub id: i16,
+    pub frame_size: i16,
+    pub msg_size: i32,
+    pub frame_offset: i32,
 }
 
 pub const FRAGMENT_MAX: usize = 1500;

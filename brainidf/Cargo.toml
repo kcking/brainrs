@@ -33,7 +33,7 @@ esp-idf-svc = { version = "0.51", features = [ "embassy-time-driver", "embassy-s
 embassy-time = { version = "0.4.0", features = ["generic-queue-32"] } # NOTE: any generic-queue variant will work
 
 # b) With embassy-executor:
-embassy-executor = { version = "0.7", features = ["executor-thread", "arch-std" ] }
+embassy-executor = { version = "0.7", features = ["executor-thread", "arch-std", "task-arena-size-8192" ] }
 
 # NOTE: if you use embassy-time with embassy-executor you don't need the generic-queue-8 feature
 
@@ -42,6 +42,8 @@ static_cell = "2.1.1"
 anyhow = "1.0.98"
 embedded-hal-async = "1.0.0"
 async-io = { version = "0.3.0", package = "async-io-mini" }
+ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }
+smart-leds = "0.4.0"
 
 [build-dependencies]
 embuild = "0.33"

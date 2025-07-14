@@ -1,3 +1,4 @@
+pub mod network_interfaces;
 pub mod proto;
 
 use std::{
@@ -20,7 +21,9 @@ use esp_idf_svc::{
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
 };
 use log::info;
+use smart_leds::RGB8;
 use static_cell::StaticCell;
+use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::proto::Header;
 
@@ -28,6 +31,9 @@ const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const BRAIN_PORT: u16 = 8003;
 const PINKY_PORT: u16 = 8002;
+
+const LED_CH1_GPIO: u8 = 32;
+const LED_CH2_GPIO: u8 = 2;
 
 #[embassy_executor::task]
 async fn run(spawner: Spawner) {
@@ -58,9 +64,37 @@ fn inner_main() {
 
 #[embassy_executor::task]
 async fn keep_wifi_connected() {
+    //  TODO: lift this even higher so we can give some pins to other tasks.
+    let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let timer_service = EspTaskTimerService::new().unwrap();
+
+    let led_pin = peripherals.pins.gpio32;
+    let channel = peripherals.rmt.channel0;
+    let mut ws2812 = Ws2812Esp32Rmt::new(channel, led_pin).unwrap();
+    let mut leds = vec![smart_leds::RGB8::new(0, 0, 0); 2048];
+    ws2812.write_nocopy(leds.iter().cloned()).unwrap();
+
+    let network_if = network_interfaces::setup_eth_driver(
+        peripherals.mac,
+        peripherals.pins.gpio25,
+        peripherals.pins.gpio26,
+        peripherals.pins.gpio27,
+        peripherals.pins.gpio23,
+        peripherals.pins.gpio22,
+        peripherals.pins.gpio21,
+        peripherals.pins.gpio19,
+        peripherals.pins.gpio18,
+        peripherals.pins.gpio17,
+        Some(peripherals.pins.gpio15),
+        &sys_loop,
+        &timer_service,
+    );
+
     let mut msg_id = 0i16;
     loop {
-        let network_if = connect_network().await.unwrap();
+        // Connect logic takes temporary ownership and passes it back.
+        let network_if = connect_network(network_if).await.unwrap();
         let bcast_addr = network_if.get_broadcast();
 
         info!("broadcast addr: {bcast_addr:?}");
@@ -91,9 +125,56 @@ async fn keep_wifi_connected() {
             .await
             .unwrap();
 
-        let rx_buf = &mut [0u8; 32];
+        let rx_buf = &mut [0u8; 4096];
+
+        // The current brain firmware only uses data CH1, though it has a CH2 as well.
+
         loop {
             if let Ok((count, from)) = udp_sock.recv_from(rx_buf).await {
+                let mut rx_packet = &rx_buf[..count];
+                let header = Header::from_reader(&mut rx_packet);
+                if header.frame_offset == 0 {
+                    // parse message
+                    // TODO: handle messages longer than one packet
+                    // Take care of R|G|B spanning the frame boundary.
+                    let msg_type = rx_packet[0];
+                    rx_packet = &rx_packet[1..];
+                    /*
+                     * Brain Panel Shade message format:
+                     * 12byte header | 0x01 (message type) | 1byte bool hasPongData | optional bytearray (int + bytes) |
+                     * | bytearray shader descrption  (2-bytes: 0x01 (PIXEL type),  0x01 (encoding RGB))
+                     */
+                    let has_pong = rx_packet[0] > 0;
+                    rx_packet = &rx_packet[1..];
+                    if has_pong {
+                        let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
+                        rx_packet = &rx_packet[4..];
+                        rx_packet = &rx_packet[pong_len as usize..];
+                    }
+                    let desc_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
+                    rx_packet = &rx_packet[4..];
+                    let desc = &rx_packet[..desc_len as usize];
+                    rx_packet = &rx_packet[desc_len as usize..];
+
+                    let mut pixel_count = u16::from_be_bytes(rx_packet[..2].try_into().unwrap());
+                    info!("pixel_count: {pixel_count}");
+                    rx_packet = &rx_packet[2..];
+
+                    // TODO: handle GRB as well
+                    let start = std::time::Instant::now();
+                    if desc == &[1, 1] {
+                        for (i, rgb) in rx_packet.chunks_exact(3).enumerate() {
+                            let [r, g, b] = rgb.try_into().unwrap();
+                            if i < leds.len() {
+                                leds[i] = RGB8::new(r, g, b);
+                            }
+                        }
+                        //TODO: handle remainder
+                    }
+                    let write_leds = &leds.as_slice()[0..(leds.len().min(pixel_count as usize))];
+                    ws2812.write_nocopy(write_leds.iter().cloned()).unwrap();
+                    info!("write time {:?}", start.elapsed());
+                }
                 // info!("rx {count} bytes from {from:?}");
                 // info!("{:x?}", &rx_buf[..count]);
             }
@@ -105,49 +186,31 @@ async fn keep_wifi_connected() {
     }
 }
 
-async fn connect_network() -> anyhow::Result<impl NetworkInterface + 'static> {
-    let peripherals = Peripherals::take()?;
-    let pins = peripherals.pins;
-    let sys_loop = EspSystemEventLoop::take()?;
-    let timer_service = EspTaskTimerService::new()?;
+// struct
 
-    {
-        // Make sure to configure ethernet in sdkconfig and adjust the parameters below for your hardware
-        let eth_driver = EthDriver::new_rmii(
-            peripherals.mac,
-            pins.gpio25,
-            pins.gpio26,
-            pins.gpio27,
-            pins.gpio23,
-            pins.gpio22,
-            pins.gpio21,
-            pins.gpio19,
-            pins.gpio18,
-            esp_idf_svc::eth::RmiiClockConfig::<gpio::Gpio0, gpio::Gpio16, gpio::Gpio17>::OutputInvertedGpio17(
-                pins.gpio17,
-            ),
-            Some(pins.gpio15),
-            esp_idf_svc::eth::RmiiEthChipset::LAN87XX,
-            Some(0),
-            sys_loop.clone(),
-        )?;
-        let mut eth = AsyncEth::wrap(
-            EspEth::wrap(eth_driver)?,
-            sys_loop.clone(),
-            timer_service.clone(),
-        )?;
+// enum ExtractedMessage<'a> {
+//     ShadePanel { num_leds: u16, rgb_data: &'a [u8] },
+// }
 
-        eth.start().await?;
-        info!("Eth started");
+// impl<'a> ExtractedMessage<'a> {
+//     fn parse(packet: &[u8]) -> Self {
 
-        eth.wait_connected().await?;
-        info!("Eth connected");
-        eth.wait_netif_up().await?;
+//     }
+// }
 
-        info!("Eth netif_up");
+async fn connect_network(
+    mut eth: AsyncEth<EspEth<'static, RmiiEth>>,
+) -> anyhow::Result<impl NetworkInterface + 'static> {
+    eth.start().await?;
+    info!("Eth started");
 
-        return Ok(eth);
-    }
+    eth.wait_connected().await?;
+    info!("Eth connected");
+    eth.wait_netif_up().await?;
+
+    info!("Eth netif_up");
+
+    return Ok(eth);
 
     // {
     //     let nvs = EspDefaultNvsPartition::take()?;
