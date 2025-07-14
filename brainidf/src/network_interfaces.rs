@@ -4,6 +4,100 @@ use esp_idf_svc::hal::gpio::{
 
 use crate::*;
 
+pub async fn connect_network(
+    mut eth: AsyncEth<EspEth<'static, RmiiEth>>,
+) -> anyhow::Result<impl NetworkInterface + 'static> {
+    eth.start().await?;
+    info!("Eth started");
+
+    eth.wait_connected().await?;
+    info!("Eth connected");
+    eth.wait_netif_up().await?;
+
+    info!("Eth netif_up");
+
+    return Ok(eth);
+
+    // {
+    //     let nvs = EspDefaultNvsPartition::take()?;
+    //     let mut wifi = AsyncWifi::wrap(
+    //         EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
+    //         sys_loop,
+    //         timer_service,
+    //     )?;
+
+    //     let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
+    //         ssid: SSID.try_into().unwrap(),
+    //         bssid: None,
+    //         auth_method: AuthMethod::WPA2Personal,
+    //         password: PASSWORD.try_into().unwrap(),
+    //         channel: None,
+    //         ..Default::default()
+    //     });
+
+    //     wifi.set_configuration(&wifi_configuration)?;
+
+    //     wifi.start().await?;
+    //     info!("Wifi started");
+
+    //     wifi.connect().await?;
+    //     info!("Wifi connected");
+
+    //     wifi.wait_netif_up().await?;
+    //     info!("Wifi netif up");
+
+    //     Ok(wifi)
+    // }
+}
+
+pub trait NetworkInterface {
+    fn get_ip(&self) -> Ipv4Addr;
+    fn get_subnet(&self) -> Ipv4Addr;
+    fn get_broadcast(&self) -> Ipv4Addr {
+        let bcast_addr = Ipv4Addr::from(self.get_ip().to_bits() | (!self.get_subnet()).to_bits());
+        bcast_addr
+    }
+    fn is_up(&self) -> bool;
+}
+
+impl<'a> NetworkInterface for AsyncWifi<EspWifi<'a>> {
+    fn get_ip(&self) -> Ipv4Addr {
+        self.wifi().sta_netif().get_ip_info().unwrap().ip
+    }
+
+    fn get_subnet(&self) -> Ipv4Addr {
+        self.wifi()
+            .sta_netif()
+            .get_ip_info()
+            .unwrap()
+            .subnet
+            .mask
+            .into()
+    }
+
+    fn is_up(&self) -> bool {
+        self.wifi().is_up().unwrap()
+    }
+}
+
+impl<'a> NetworkInterface for AsyncEth<EspEth<'a, RmiiEth>> {
+    fn get_ip(&self) -> Ipv4Addr {
+        self.eth().netif().get_ip_info().unwrap().ip
+    }
+
+    fn get_subnet(&self) -> Ipv4Addr {
+        info!(
+            "subnet mask: {}",
+            self.eth().netif().get_ip_info().unwrap().subnet.mask.0
+        );
+        self.eth().netif().get_ip_info().unwrap().subnet.mask.into()
+    }
+
+    fn is_up(&self) -> bool {
+        self.eth().is_up().unwrap()
+    }
+}
+
 // Consume pins individually so we do not need the whole `Peripherals` struct.
 pub fn setup_eth_driver(
     mac: esp_idf_svc::hal::mac::MAC,
