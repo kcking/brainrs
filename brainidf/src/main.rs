@@ -21,11 +21,12 @@ use esp_idf_svc::{
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
 };
 use log::info;
+use rgb::AsPixels;
 use smart_leds::RGB8;
 use static_cell::StaticCell;
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
-use crate::proto::Header;
+use crate::proto::{Header, MessageType};
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
@@ -72,8 +73,12 @@ async fn keep_wifi_connected() {
     let led_pin = peripherals.pins.gpio32;
     let channel = peripherals.rmt.channel0;
     let mut ws2812 = Ws2812Esp32Rmt::new(channel, led_pin).unwrap();
-    let mut leds = vec![smart_leds::RGB8::new(0, 0, 0); 2048];
-    ws2812.write_nocopy(leds.iter().cloned()).unwrap();
+    // reset to black
+    ws2812
+        .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
+        .unwrap();
+
+    let mut led_state = LedState::new(2048);
 
     let network_if = network_interfaces::setup_eth_driver(
         peripherals.mac,
@@ -130,53 +135,13 @@ async fn keep_wifi_connected() {
         // The current brain firmware only uses data CH1, though it has a CH2 as well.
 
         loop {
-            if let Ok((count, from)) = udp_sock.recv_from(rx_buf).await {
+            if let Ok((count, _from)) = udp_sock.recv_from(rx_buf).await {
                 let mut rx_packet = &rx_buf[..count];
                 let header = Header::from_reader(&mut rx_packet);
-                if header.frame_offset == 0 {
-                    // parse message
-                    // TODO: handle messages longer than one packet
-                    // Take care of R|G|B spanning the frame boundary.
-                    let msg_type = rx_packet[0];
-                    rx_packet = &rx_packet[1..];
-                    /*
-                     * Brain Panel Shade message format:
-                     * 12byte header | 0x01 (message type) | 1byte bool hasPongData | optional bytearray (int + bytes) |
-                     * | bytearray shader descrption  (2-bytes: 0x01 (PIXEL type),  0x01 (encoding RGB))
-                     */
-                    let has_pong = rx_packet[0] > 0;
-                    rx_packet = &rx_packet[1..];
-                    if has_pong {
-                        let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
-                        rx_packet = &rx_packet[4..];
-                        rx_packet = &rx_packet[pong_len as usize..];
-                    }
-                    let desc_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
-                    rx_packet = &rx_packet[4..];
-                    let desc = &rx_packet[..desc_len as usize];
-                    rx_packet = &rx_packet[desc_len as usize..];
-
-                    let mut pixel_count = u16::from_be_bytes(rx_packet[..2].try_into().unwrap());
-                    info!("pixel_count: {pixel_count}");
-                    rx_packet = &rx_packet[2..];
-
-                    // TODO: handle GRB as well
-                    let start = std::time::Instant::now();
-                    if desc == &[1, 1] {
-                        for (i, rgb) in rx_packet.chunks_exact(3).enumerate() {
-                            let [r, g, b] = rgb.try_into().unwrap();
-                            if i < leds.len() {
-                                leds[i] = RGB8::new(r, g, b);
-                            }
-                        }
-                        //TODO: handle remainder
-                    }
-                    let write_leds = &leds.as_slice()[0..(leds.len().min(pixel_count as usize))];
-                    ws2812.write_nocopy(write_leds.iter().cloned()).unwrap();
-                    info!("write time {:?}", start.elapsed());
+                if led_state.on_message(header, rx_packet) {
+                    let leds = led_state.get_leds();
+                    ws2812.write_nocopy(leds.iter().cloned()).unwrap();
                 }
-                // info!("rx {count} bytes from {from:?}");
-                // info!("{:x?}", &rx_buf[..count]);
             }
         }
 
@@ -186,17 +151,98 @@ async fn keep_wifi_connected() {
     }
 }
 
-// struct
+/// State machine to handle message unframing. Maintains the current state of
+/// all LEDs with no additional memory overhead.
+struct LedState {
+    last_header: Option<Header>,
+    last_led_byte_idx: Option<usize>,
+    pixel_count: Option<usize>,
+    leds: Vec<u8>,
+}
 
-// enum ExtractedMessage<'a> {
-//     ShadePanel { num_leds: u16, rgb_data: &'a [u8] },
-// }
+impl LedState {
+    pub fn new(n_leds: usize) -> Self {
+        Self {
+            last_header: None,
+            last_led_byte_idx: None,
+            leds: vec![0u8; n_leds * 3],
+            pixel_count: None,
+        }
+    }
+    pub fn get_leds(&self) -> &[RGB8] {
+        let pixels = self.leds.as_slice().as_pixels();
+        if let Some(pixel_count) = self.pixel_count {
+            &pixels[..pixel_count.min(pixels.len())]
+        } else {
+            pixels
+        }
+    }
+    // Returns: whether caller should write LED data out to RMT
+    pub fn on_message(&mut self, header: Header, mut rx_packet: &[u8]) -> bool {
+        if header.frame_offset == 0 {
+            // Reset framing state.
+            self.last_led_byte_idx = None;
+            self.last_header = None;
 
-// impl<'a> ExtractedMessage<'a> {
-//     fn parse(packet: &[u8]) -> Self {
+            let msg_type = rx_packet[0];
+            if msg_type != MessageType::BrainPanelShade as u8 {
+                return false;
+            }
+            rx_packet = &rx_packet[1..];
 
-//     }
-// }
+            /*
+             * Brain Panel Shade message format:
+             * 12byte header | 0x01 (message type) | 1byte bool hasPongData | optional bytearray (int + bytes) |
+             * | bytearray shader descrption  (2-bytes: 0x01 (PIXEL type),  0x01 (encoding RGB))
+             */
+            let has_pong = rx_packet[0] > 0;
+            rx_packet = &rx_packet[1..];
+            if has_pong {
+                // Ignore pong data for now.
+                let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
+                rx_packet = &rx_packet[4..];
+                rx_packet = &rx_packet[pong_len as usize..];
+            }
+            let desc_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
+            rx_packet = &rx_packet[4..];
+            let desc = &rx_packet[..desc_len as usize];
+            rx_packet = &rx_packet[desc_len as usize..];
+
+            if desc != &[1, 1] {
+                // Only pixel shader currently supported
+                self.last_header = None;
+                self.last_led_byte_idx = None;
+                return false;
+            }
+
+            let pixel_count = u16::from_be_bytes(rx_packet[..2].try_into().unwrap());
+            rx_packet = &rx_packet[2..];
+            self.pixel_count = Some(pixel_count as usize);
+        } else {
+            if let Some(last_header) = &self.last_header
+                && last_header.id == header.id
+                && (last_header.frame_offset as usize) + (last_header.frame_size as usize)
+                    == header.frame_offset as usize
+            {
+                // Direct continuation of last packet, fall through to writing LED data.
+            } else {
+                // Not a continuation. Regardless of whether this is a network
+                // error or we actually finished the last message, reset state.
+                self.last_led_byte_idx = None;
+                self.last_header = None;
+                return false;
+            }
+        }
+
+        let offset = self.last_led_byte_idx.unwrap_or(0);
+        self.leds.as_mut_slice()[offset..offset + rx_packet.len()].copy_from_slice(rx_packet);
+        self.last_led_byte_idx = Some(offset + rx_packet.len());
+
+        let ready_to_write = header.frame_offset + header.frame_size as i32 == header.msg_size;
+        self.last_header = Some(header);
+        return ready_to_write;
+    }
+}
 
 async fn connect_network(
     mut eth: AsyncEth<EspEth<'static, RmiiEth>>,
