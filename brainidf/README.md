@@ -1,13 +1,43 @@
-esp-idf-svc version of the brain. synthesizes [examples](https://github.com/esp-rs/esp-idf-svc/blob/e0d9c76e83122ac991526a6c6f296b12cf698258/examples/tcp_async.rs) and some chatter in the esp-rs matrix room.
+# SparkleMotion Brain in Rust
+
+This is the esp-idf-\{hal,svc\} version of the brain. It synthesizes
+[examples](https://github.com/esp-rs/esp-idf-svc/blob/e0d9c76e83122ac991526a6c6f296b12cf698258/examples/tcp_async.rs)
+and some chatter in the esp-rs matrix room.
 
 The main reason we need esp-idf-svc is for RMII ethernet support.
 
-- should we use same ID for both wifi and eth? (MAC addresses are different between the two interfaces).
-- still had 1 spurious IllegalInstruction with just a UDP read-loop, have to investigate more.
+## Supported Boards
 
-Run
+This version of the brain only supports ESP32 as it requires RMII for Ethernet.
+
+## Features
+
+- Ethernet or WiFi (the current code only has Ethernet enabled).
+- Check in with Pinky
+- Render PixelShader
+- Re-send BrainHello when we haven't heard from Pinky in 5s
+- Handle fragmented messages
+
+## TODO
+
+- OTA firmware updates
+- Handle Mapping messages
+- Gamma Correction
+
+### Development Setup
+
+```bash
+cargo install --locked espup espflash cargo-espflash && espup install -v 1.88.0 && . ~/export-esp.sh
+```
+
+### Run
 
 ```
-# debug mode causes a stack overflow
 cargo run --release
 ```
+
+### IDE Support
+
+I recommend using VSCode to develop. First open a terminal and export the esp
+env vars with `. ~/export-esp.sh`, then run `code .` in the same terminal so it
+inherits the configuration.
