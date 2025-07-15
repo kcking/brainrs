@@ -17,7 +17,9 @@ debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
 
 [features]
-default = []
+default = ["ethernet"]
+ethernet = []
+wifi = []
 
 experimental = ["esp-idf-svc/experimental"]
 

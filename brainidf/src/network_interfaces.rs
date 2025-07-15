@@ -1,12 +1,13 @@
-use esp_idf_svc::hal::gpio::{
-    Gpio15, Gpio17, Gpio18, Gpio19, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26, Gpio27,
+use esp_idf_svc::hal::{
+    gpio::{Gpio15, Gpio17, Gpio18, Gpio19, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26, Gpio27},
+    modem::Modem,
 };
 
 use crate::*;
 
-pub async fn connect_network(
+pub async fn connect_eth(
     mut eth: AsyncEth<EspEth<'static, RmiiEth>>,
-) -> anyhow::Result<impl NetworkInterface + 'static> {
+) -> anyhow::Result<AsyncEth<EspEth<'static, RmiiEth>>> {
     eth.start().await?;
     info!("Eth started");
 
@@ -17,40 +18,35 @@ pub async fn connect_network(
     info!("Eth netif_up");
 
     return Ok(eth);
-
-    // {
-    //     let nvs = EspDefaultNvsPartition::take()?;
-    //     let mut wifi = AsyncWifi::wrap(
-    //         EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
-    //         sys_loop,
-    //         timer_service,
-    //     )?;
-
-    //     let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
-    //         ssid: SSID.try_into().unwrap(),
-    //         bssid: None,
-    //         auth_method: AuthMethod::WPA2Personal,
-    //         password: PASSWORD.try_into().unwrap(),
-    //         channel: None,
-    //         ..Default::default()
-    //     });
-
-    //     wifi.set_configuration(&wifi_configuration)?;
-
-    //     wifi.start().await?;
-    //     info!("Wifi started");
-
-    //     wifi.connect().await?;
-    //     info!("Wifi connected");
-
-    //     wifi.wait_netif_up().await?;
-    //     info!("Wifi netif up");
-
-    //     Ok(wifi)
-    // }
 }
 
-pub trait NetworkInterface {
+pub async fn connect_wifi(
+    mut wifi: AsyncWifi<EspWifi<'static>>,
+) -> anyhow::Result<AsyncWifi<EspWifi<'static>>> {
+    let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
+        ssid: SSID.try_into().unwrap(),
+        bssid: None,
+        auth_method: AuthMethod::WPA2Personal,
+        password: PASSWORD.try_into().unwrap(),
+        channel: None,
+        ..Default::default()
+    });
+
+    wifi.set_configuration(&wifi_configuration)?;
+
+    wifi.start().await?;
+    info!("Wifi started");
+
+    wifi.connect().await?;
+    info!("Wifi connected");
+
+    wifi.wait_netif_up().await?;
+    info!("Wifi netif up");
+
+    Ok(wifi)
+}
+
+pub trait NetworkInterface: Sized {
     fn get_ip(&self) -> Ipv4Addr;
     fn get_subnet(&self) -> Ipv4Addr;
     fn get_broadcast(&self) -> Ipv4Addr {
@@ -58,9 +54,12 @@ pub trait NetworkInterface {
         bcast_addr
     }
     fn is_up(&self) -> bool;
+
+    #[allow(async_fn_in_trait)]
+    async fn outer_connect(self) -> anyhow::Result<Self>;
 }
 
-impl<'a> NetworkInterface for AsyncWifi<EspWifi<'a>> {
+impl NetworkInterface for AsyncWifi<EspWifi<'static>> {
     fn get_ip(&self) -> Ipv4Addr {
         self.wifi().sta_netif().get_ip_info().unwrap().ip
     }
@@ -78,9 +77,13 @@ impl<'a> NetworkInterface for AsyncWifi<EspWifi<'a>> {
     fn is_up(&self) -> bool {
         self.wifi().is_up().unwrap()
     }
+
+    async fn outer_connect(self) -> anyhow::Result<Self> {
+        connect_wifi(self).await
+    }
 }
 
-impl<'a> NetworkInterface for AsyncEth<EspEth<'a, RmiiEth>> {
+impl NetworkInterface for AsyncEth<EspEth<'static, RmiiEth>> {
     fn get_ip(&self) -> Ipv4Addr {
         self.eth().netif().get_ip_info().unwrap().ip
     }
@@ -95,6 +98,10 @@ impl<'a> NetworkInterface for AsyncEth<EspEth<'a, RmiiEth>> {
 
     fn is_up(&self) -> bool {
         self.eth().is_up().unwrap()
+    }
+
+    async fn outer_connect(self) -> anyhow::Result<Self> {
+        connect_eth(self).await
     }
 }
 
@@ -140,4 +147,20 @@ pub fn setup_eth_driver(
     )
     .unwrap();
     eth
+}
+
+pub fn setup_wifi_driver(
+    modem: Modem,
+    sys_loop: &EspSystemEventLoop,
+    timer_service: &EspTaskTimerService,
+) -> AsyncWifi<EspWifi<'static>> {
+    let nvs = EspDefaultNvsPartition::take().unwrap();
+    let mut wifi = AsyncWifi::wrap(
+        EspWifi::new(modem, sys_loop.clone(), Some(nvs)).unwrap(),
+        sys_loop.clone(),
+        timer_service.clone(),
+    )
+    .unwrap();
+
+    wifi
 }

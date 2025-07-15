@@ -37,7 +37,7 @@ use static_cell::StaticCell;
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::{
-    network_interfaces::{NetworkInterface, connect_network},
+    network_interfaces::{NetworkInterface, connect_eth},
     proto::{Header, MessageType, create_hello_msg},
 };
 
@@ -98,6 +98,7 @@ async fn main_task() {
     std::thread::spawn(move || led_write_task(led_pin, channel));
     let mut led_state = LedState::new(MAX_LEDS);
 
+    #[cfg(feature = "ethernet")]
     let network_if = network_interfaces::setup_eth_driver(
         peripherals.mac,
         peripherals.pins.gpio25,
@@ -113,11 +114,16 @@ async fn main_task() {
         &sys_loop,
         &timer_service,
     );
+    #[cfg(feature = "wifi")]
+    let network_if =
+        network_interfaces::setup_wifi_driver(peripherals.modem, &sys_loop, &timer_service);
 
     let mut msg_id = 0i16;
     loop {
         // Connect logic takes temporary ownership and passes it back.
-        let network_if = connect_network(network_if).await.unwrap();
+        // TODO: make outer_connect name better, runs connection logic, eth/wifi
+        // agnostic.
+        let network_if = network_if.outer_connect().await.unwrap();
         let bcast_addr = network_if.get_broadcast();
 
         info!("broadcast addr: {bcast_addr:?}");
@@ -174,7 +180,7 @@ async fn main_task() {
             }
         }
 
-        while network_if.is_up() {
+        while NetworkInterface::is_up(&network_if) {
             embassy_time::Delay.delay_ms(1000).await;
         }
     }
