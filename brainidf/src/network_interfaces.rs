@@ -20,6 +20,7 @@ pub async fn connect_eth(
     return Ok(eth);
 }
 
+#[cfg(feature = "wifi")]
 pub async fn connect_wifi(
     mut wifi: AsyncWifi<EspWifi<'static>>,
 ) -> anyhow::Result<AsyncWifi<EspWifi<'static>>> {
@@ -59,6 +60,7 @@ pub trait NetworkInterface: Sized {
     async fn outer_connect(self) -> anyhow::Result<Self>;
 }
 
+#[cfg(feature = "wifi")]
 impl NetworkInterface for AsyncWifi<EspWifi<'static>> {
     fn get_ip(&self) -> Ipv4Addr {
         self.wifi().sta_netif().get_ip_info().unwrap().ip

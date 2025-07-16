@@ -10,7 +10,7 @@ name = "brainidf"
 harness = false # do not use the built in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
-opt-level = "s"
+# opt-level = "s"
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash
@@ -26,20 +26,11 @@ experimental = ["esp-idf-svc/experimental"]
 [dependencies]
 log = "0.4"
 
-# --- Optional Embassy Integration ---
 esp-idf-svc = { version = "0.51", features = [ "embassy-time-driver", "embassy-sync"] }
-
-# If you enable embassy-time-driver, you MUST also add one of:
-
-# a) Standalone Embassy libs ( embassy-time, embassy-sync etc) with a foreign async runtime:
 embassy-time = { version = "0.4.0", features = ["generic-queue-32"] } # NOTE: any generic-queue variant will work
-
-# b) With embassy-executor:
 embassy-executor = { version = "0.7", features = ["executor-thread", "arch-std", "task-arena-size-8192" ] }
 
-# NOTE: if you use embassy-time with embassy-executor you don't need the generic-queue-8 feature
 
-critical-section = { version = "1.2.0", features = ["restore-state-bool"], default-features = false }
 static_cell = "2.1.1"
 anyhow = "1.0.98"
 embedded-hal-async = "1.0.0"

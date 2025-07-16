@@ -23,10 +23,10 @@ use esp_idf_svc::{
         peripheral::Peripheral,
         prelude::Peripherals,
         rmt::RmtChannel,
-        task::block_on,
+        task::{block_on, thread::ThreadSpawnConfiguration},
     },
     nvs::EspDefaultNvsPartition,
-    sys::{esp_mac_type_t_ESP_MAC_WIFI_STA, esp_read_mac},
+    sys::{ESP_TASK_PRIO_MAX, esp_mac_type_t_ESP_MAC_WIFI_STA, esp_read_mac},
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, AuthMethod, ClientConfiguration, Configuration, EspWifi},
 };
@@ -41,7 +41,9 @@ use crate::{
     proto::{Header, MessageType, create_hello_msg},
 };
 
+#[cfg(feature = "wifi")]
 const SSID: &str = env!("SSID");
+#[cfg(feature = "wifi")]
 const PASSWORD: &str = env!("PASSWORD");
 const BRAIN_PORT: u16 = 8003;
 const PINKY_PORT: u16 = 8002;
@@ -60,6 +62,11 @@ fn main() {
     esp_idf_svc::log::EspLogger::initialize_default();
     let _mounted_eventfs = esp_idf_svc::io::vfs::MountedEventfs::mount(5).unwrap();
 
+    ThreadSpawnConfiguration {
+        pin_to_core: Some(Core::Core0),
+        ..ThreadSpawnConfiguration::default()
+    }
+    .set();
     let exec = EXECUTOR.init(Executor::new());
 
     let _ = exec.run(|spawner| {
@@ -95,7 +102,15 @@ async fn main_task() {
 
     let led_pin = peripherals.pins.gpio32;
     let channel = peripherals.rmt.channel0;
+
+    ThreadSpawnConfiguration {
+        pin_to_core: Some(Core::Core1),
+        priority: ESP_TASK_PRIO_MAX as u8 - 1,
+        ..ThreadSpawnConfiguration::default()
+    }
+    .set();
     std::thread::spawn(move || led_write_task(led_pin, channel));
+    ThreadSpawnConfiguration::default().set();
     let mut led_state = LedState::new(MAX_LEDS);
 
     #[cfg(feature = "ethernet")]
