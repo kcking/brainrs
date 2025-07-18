@@ -24,6 +24,11 @@ pub enum PixelShaderEncoding {
 pub enum MessageType {
     BrainHello = 0u8,
     BrainPanelShade = 1u8,
+    MapperHello,
+    BrainIdRequest,
+    BrainMapping,
+    Ping,
+    UseFirmware,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +76,48 @@ impl Header {
             msg_size: i32::from_be_bytes(msg_size),
             frame_offset: i32::from_be_bytes(frame_offset),
         }
+    }
+}
+
+pub fn prepend_header(msg_id: i16, mut payload: Vec<u8>) -> Vec<u8> {
+    let header = Header::from_payload(msg_id, &payload);
+    payload.splice(0..0, header.to_bytes());
+    payload
+}
+
+pub struct BrainHello {
+    pub brain_id: String,
+    pub panel_name: Option<String>,
+    pub firmware_version: Option<String>,
+    pub idf_version: Option<String>,
+}
+
+impl BrainHello {
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut w = vec![];
+
+        w.write_all(&[MessageType::BrainHello as u8]).unwrap();
+        write_str(&mut w, &self.brain_id);
+        write_str_opt(&mut w, self.panel_name.as_deref());
+        write_str_opt(&mut w, self.firmware_version.as_deref());
+        write_str_opt(&mut w, self.idf_version.as_deref());
+
+        w
+    }
+}
+
+pub struct Ping {
+    pub data: Vec<u8>,
+    pub is_pong: bool,
+}
+
+impl Ping {
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut w = vec![];
+        w.write_all(&[MessageType::Ping as u8]).unwrap();
+        write_bool(&mut w, self.is_pong);
+        write_bytes(&mut w, &self.data);
+        w
     }
 }
 
@@ -157,6 +204,16 @@ pub fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
     write_str_opt(w, None);
     write_str_opt(w, None);
     write_str_opt(w, None);
+}
+
+pub fn write_bool(w: &mut impl Write, b: bool) {
+    w.write_all(&[if b { 1 } else { 0 }]).unwrap();
+}
+
+pub fn write_bytes(w: &mut impl Write, s: &[u8]) {
+    let len = s.len() as u32;
+    w.write_all(len.to_be_bytes().as_slice()).unwrap();
+    w.write_all(s).unwrap();
 }
 
 pub fn write_str(w: &mut impl Write, s: &str) {

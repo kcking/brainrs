@@ -38,7 +38,7 @@ use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_eth},
-    proto::{Header, MessageType, create_hello_msg},
+    proto::{BrainHello, Header, MessageType, Ping, create_hello_msg, prepend_header},
 };
 
 #[cfg(feature = "wifi")]
@@ -165,18 +165,45 @@ async fn main_task() {
         let rx_buf = &mut [0u8; 4096];
 
         let pinky_liveness_ttl = Duration::from_millis(5_000);
+        let mut next_pong_data = None;
 
         loop {
             let udp_rx_with_timeout =
                 embassy_time::with_timeout(pinky_liveness_ttl, udp_sock.recv_from(rx_buf));
             match udp_rx_with_timeout.await {
-                Ok(Ok((count, _from))) => {
+                Ok(Ok((count, from))) => {
                     let mut rx_packet = &rx_buf[..count];
                     let header = Header::from_reader(&mut rx_packet);
-                    if led_state.on_message(header, rx_packet) {
-                        let leds = led_state.get_leds();
-                        trace!("sent led frame");
-                        LED_FRAME_SIGNAL.signal(leds);
+                    let res = led_state.on_message(header, rx_packet);
+                    if let Some(pong_data) = res.pong_data {
+                        info!("save pong data");
+                        next_pong_data = Some(pong_data);
+                    }
+                    match res.action {
+                        OnMessageAction::Nothing => {}
+                        OnMessageAction::WriteLeds => {
+                            let leds = led_state.get_leds();
+                            trace!("sent led frame");
+                            LED_FRAME_SIGNAL.signal(leds);
+                            if let Some(next_pong_data) = next_pong_data.take() {
+                                info!("sending pong");
+                                let msg = Ping {
+                                    data: next_pong_data,
+                                    is_pong: true,
+                                };
+                                let msg = prepend_header(msg_id, msg.to_vec());
+                                msg_id = msg_id.wrapping_add_unsigned(1);
+                                // udp_sock.send_to(&msg, from).await;
+                                udp_sock.send_to(&msg, (bcast_addr, PINKY_PORT)).await;
+                            }
+                        }
+                        OnMessageAction::SendBrainHello => {
+                            let msg = create_hello_msg(msg_id, &brain_id);
+                            msg_id = msg_id.wrapping_add_unsigned(1);
+                            // TODO: log error
+                            // NOTE: broadcast didn't work here
+                            let _ = udp_sock.send_to(&msg, from).await;
+                        }
                     }
                 }
                 Ok(Err(e)) => {
@@ -199,6 +226,16 @@ async fn main_task() {
             embassy_time::Delay.delay_ms(1000).await;
         }
     }
+}
+
+struct OnMessageResult {
+    pub pong_data: Option<Vec<u8>>,
+    pub action: OnMessageAction,
+}
+enum OnMessageAction {
+    Nothing,
+    WriteLeds,
+    SendBrainHello,
 }
 
 /// State machine to handle message unframing. Maintains the current state of
@@ -229,15 +266,27 @@ impl LedState {
         .into()
     }
     // Returns: whether caller should write LED data out to RMT
-    pub fn on_message(&mut self, header: Header, mut rx_packet: &[u8]) -> bool {
+    pub fn on_message(&mut self, header: Header, mut rx_packet: &[u8]) -> OnMessageResult {
+        let mut pong_data = None;
+
         if header.frame_offset == 0 {
             // Reset framing state.
             self.last_led_byte_idx = None;
             self.last_header = None;
 
             let msg_type = rx_packet[0];
+            if msg_type == MessageType::BrainIdRequest as u8 {
+                return OnMessageResult {
+                    pong_data: pong_data,
+                    action: OnMessageAction::SendBrainHello,
+                };
+            }
             if msg_type != MessageType::BrainPanelShade as u8 {
-                return false;
+                info!("got unsupported message type {msg_type}");
+                return OnMessageResult {
+                    pong_data: pong_data,
+                    action: OnMessageAction::Nothing,
+                };
             }
             rx_packet = &rx_packet[1..];
 
@@ -252,6 +301,8 @@ impl LedState {
                 // Ignore pong data for now.
                 let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
                 rx_packet = &rx_packet[4..];
+                info!("got pong data");
+                pong_data = Some(rx_packet[..pong_len as usize].into());
                 rx_packet = &rx_packet[pong_len as usize..];
             }
             let desc_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
@@ -260,10 +311,15 @@ impl LedState {
             rx_packet = &rx_packet[desc_len as usize..];
 
             if desc != &[1, 1] {
+                //TODO: support mapping descriptor [1, 2]
+                info!("unsupported descriptor {:x?}", desc);
                 // Only pixel shader currently supported
                 self.last_header = None;
                 self.last_led_byte_idx = None;
-                return false;
+                return OnMessageResult {
+                    pong_data: pong_data,
+                    action: OnMessageAction::Nothing,
+                };
             }
 
             let pixel_count = u16::from_be_bytes(rx_packet[..2].try_into().unwrap());
@@ -281,7 +337,10 @@ impl LedState {
                 // error or we actually finished the last message, reset state.
                 self.last_led_byte_idx = None;
                 self.last_header = None;
-                return false;
+                return OnMessageResult {
+                    pong_data: pong_data,
+                    action: OnMessageAction::Nothing,
+                };
             }
         }
 
@@ -291,6 +350,13 @@ impl LedState {
 
         let ready_to_write = header.frame_offset + header.frame_size as i32 == header.msg_size;
         self.last_header = Some(header);
-        return ready_to_write;
+        OnMessageResult {
+            pong_data,
+            action: if ready_to_write {
+                OnMessageAction::WriteLeds
+            } else {
+                OnMessageAction::Nothing
+            },
+        }
     }
 }
