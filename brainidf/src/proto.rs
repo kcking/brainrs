@@ -121,6 +121,23 @@ impl Ping {
     }
 }
 
+#[repr(u8)]
+pub enum ShaderType {
+    Solid,
+    Pixel,
+}
+
+#[repr(u8)]
+pub enum Encoding {
+    DirectArgb,
+    DirectRgb,
+    /// Palette of two colors, indicated by one bit per pixel
+    /// Palette is of the form [r, g, b] * palette size.
+    Indexed2,
+    Indexed4,
+    Indexed16,
+}
+
 /*
     enum class Type : uint8_t {
         BRAIN_HELLO,       // Brain -> Pinky|Mapper

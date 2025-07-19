@@ -174,6 +174,7 @@ async fn main_task() {
                 Ok(Ok((count, from))) => {
                     let mut rx_packet = &rx_buf[..count];
                     let header = Header::from_reader(&mut rx_packet);
+                    msg_id = header.id.wrapping_add_unsigned(1);
                     let res = led_state.on_message(header, rx_packet);
                     if let Some(pong_data) = res.pong_data {
                         info!("save pong data");
@@ -193,8 +194,7 @@ async fn main_task() {
                                 };
                                 let msg = prepend_header(msg_id, msg.to_vec());
                                 msg_id = msg_id.wrapping_add_unsigned(1);
-                                // udp_sock.send_to(&msg, from).await;
-                                udp_sock.send_to(&msg, (bcast_addr, PINKY_PORT)).await;
+                                udp_sock.send_to(&msg, from).await;
                             }
                         }
                         OnMessageAction::SendBrainHello => {
@@ -245,6 +245,7 @@ struct LedState {
     last_led_byte_idx: Option<usize>,
     pixel_count: Option<usize>,
     leds: Vec<u8>,
+    palette: Option<Vec<u8>>,
 }
 
 impl LedState {
@@ -254,6 +255,7 @@ impl LedState {
             last_led_byte_idx: None,
             leds: vec![0u8; n_leds * 3],
             pixel_count: None,
+            palette: None,
         }
     }
     pub fn get_leds(&self) -> Vec<RGB8> {
@@ -271,10 +273,10 @@ impl LedState {
 
         if header.frame_offset == 0 {
             // Reset framing state.
-            self.last_led_byte_idx = None;
-            self.last_header = None;
+            self.reset();
 
             let msg_type = rx_packet[0];
+            rx_packet = &rx_packet[1..];
             if msg_type == MessageType::BrainIdRequest as u8 {
                 return OnMessageResult {
                     pong_data: pong_data,
@@ -288,7 +290,6 @@ impl LedState {
                     action: OnMessageAction::Nothing,
                 };
             }
-            rx_packet = &rx_packet[1..];
 
             /*
              * Brain Panel Shade message format:
@@ -298,7 +299,6 @@ impl LedState {
             let has_pong = rx_packet[0] > 0;
             rx_packet = &rx_packet[1..];
             if has_pong {
-                // Ignore pong data for now.
                 let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
                 rx_packet = &rx_packet[4..];
                 info!("got pong data");
@@ -310,21 +310,33 @@ impl LedState {
             let desc = &rx_packet[..desc_len as usize];
             rx_packet = &rx_packet[desc_len as usize..];
 
-            if desc != &[1, 1] {
-                //TODO: support mapping descriptor [1, 2]
-                info!("unsupported descriptor {:x?}", desc);
-                // Only pixel shader currently supported
-                self.last_header = None;
-                self.last_led_byte_idx = None;
-                return OnMessageResult {
-                    pong_data: pong_data,
-                    action: OnMessageAction::Nothing,
-                };
-            }
-
             let pixel_count = u16::from_be_bytes(rx_packet[..2].try_into().unwrap());
             rx_packet = &rx_packet[2..];
             self.pixel_count = Some(pixel_count as usize);
+
+            match desc {
+                &[1, 2] => {
+                    // ARGB, but we ignore A
+                    let palette_len = 2 * 4;
+                    // Indexed palette of 2 colors
+                    let palette = rx_packet[..palette_len].to_vec();
+                    rx_packet = &rx_packet[palette_len..];
+                    self.palette = Some(palette);
+                }
+                &[1, 1] => {
+                    self.palette = None;
+                }
+                _ => {
+                    //TODO: support mapping descriptor [1, 2]
+                    info!("unsupported descriptor {:x?}", desc);
+                    // Only pixel shader currently supported
+                    self.reset();
+                    return OnMessageResult {
+                        pong_data: pong_data,
+                        action: OnMessageAction::Nothing,
+                    };
+                }
+            }
         } else {
             if let Some(last_header) = &self.last_header
                 && last_header.id == header.id
@@ -335,8 +347,7 @@ impl LedState {
             } else {
                 // Not a continuation. Regardless of whether this is a network
                 // error or we actually finished the last message, reset state.
-                self.last_led_byte_idx = None;
-                self.last_header = None;
+                self.reset();
                 return OnMessageResult {
                     pong_data: pong_data,
                     action: OnMessageAction::Nothing,
@@ -345,7 +356,25 @@ impl LedState {
         }
 
         let offset = self.last_led_byte_idx.unwrap_or(0);
-        self.leds.as_mut_slice()[offset..offset + rx_packet.len()].copy_from_slice(rx_packet);
+        if let Some(ref palette) = self.palette {
+            // NOTE: only 2 palette supported
+            for (i, b) in rx_packet.iter().enumerate() {
+                for bit in 0..8 {
+                    let led_index = (offset + i) * 8 + bit;
+                    if led_index * 3 >= self.leds.len() {
+                        continue;
+                    }
+                    let pixel = &mut self.leds[led_index * 3..(led_index + 1) * 3];
+                    if (1 << (8 - bit)) & b == 0 {
+                        pixel.copy_from_slice(&palette[1..4]);
+                    } else {
+                        pixel.copy_from_slice(&palette[5..8]);
+                    }
+                }
+            }
+        } else {
+            self.leds.as_mut_slice()[offset..offset + rx_packet.len()].copy_from_slice(rx_packet);
+        }
         self.last_led_byte_idx = Some(offset + rx_packet.len());
 
         let ready_to_write = header.frame_offset + header.frame_size as i32 == header.msg_size;
@@ -358,5 +387,11 @@ impl LedState {
                 OnMessageAction::Nothing
             },
         }
+    }
+
+    fn reset(&mut self) {
+        self.last_header = None;
+        self.last_led_byte_idx = None;
+        self.palette = None;
     }
 }
