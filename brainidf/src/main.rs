@@ -101,9 +101,6 @@ fn led_write_task(
                 dithering::correct_22(rgb.r, frame_number as u32, pixel_idx as u32),
                 dithering::correct_22(rgb.g, frame_number as u32, pixel_idx as u32),
                 dithering::correct_22(rgb.b, frame_number as u32, pixel_idx as u32),
-                // dithering::correct_22_no_dither(rgb.r),
-                // dithering::correct_22_no_dither(rgb.g),
-                // dithering::correct_22_no_dither(rgb.b),
             )
         });
         ws2812.write_nocopy(dithered).unwrap();

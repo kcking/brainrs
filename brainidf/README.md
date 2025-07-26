@@ -18,11 +18,11 @@ This version of the brain only supports ESP32 as it requires RMII for Ethernet.
 - Re-send BrainHello when we haven't heard from Pinky in 5s
 - Handle fragmented messages
 - Handle Mapping messages
+- Gamma Correction
 
 ## TODO
 
 - OTA firmware updates
-- Gamma Correction
 
 ### Development Setup
 
