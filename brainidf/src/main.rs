@@ -1,4 +1,5 @@
 #![allow(unused)]
+pub mod dithering;
 pub mod network_interfaces;
 pub mod proto;
 
@@ -81,15 +82,33 @@ fn led_write_task(
     data_gpio: impl Peripheral<P = impl OutputPin>,
     rmt: impl Peripheral<P = impl RmtChannel>,
 ) {
+    let max_framerate = 60;
+    let mut frame_number = 0u64;
+
     let mut ws2812 = Ws2812Esp32Rmt::new(rmt, data_gpio).unwrap();
     // reset to black at start
     ws2812
         .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
         .unwrap();
+
+    let frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
     loop {
         let data = block_on(LED_FRAME_SIGNAL.wait());
+        // ws2812.write_nocopy(data).unwrap();
         trace!("got led frame");
-        ws2812.write_nocopy(data).unwrap();
+        let dithered = data.iter().enumerate().map(|(pixel_idx, rgb)| {
+            RGB8::new(
+                dithering::correct_22(rgb.r, frame_number as u32, pixel_idx as u32),
+                dithering::correct_22(rgb.g, frame_number as u32, pixel_idx as u32),
+                dithering::correct_22(rgb.b, frame_number as u32, pixel_idx as u32),
+                // dithering::correct_22_no_dither(rgb.r),
+                // dithering::correct_22_no_dither(rgb.g),
+                // dithering::correct_22_no_dither(rgb.b),
+            )
+        });
+        ws2812.write_nocopy(dithered).unwrap();
+
+        frame_number += 1;
     }
 }
 

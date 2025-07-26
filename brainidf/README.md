@@ -12,16 +12,16 @@ This version of the brain only supports ESP32 as it requires RMII for Ethernet.
 
 ## Features
 
-- Ethernet or WiFi (the current code only has Ethernet enabled).
+- Ethernet or WiFi (WiFi is enabled with `--no-default-features -F wifi`).
 - Check in with Pinky
 - Render PixelShader
 - Re-send BrainHello when we haven't heard from Pinky in 5s
 - Handle fragmented messages
+- Handle Mapping messages
 
 ## TODO
 
 - OTA firmware updates
-- Handle Mapping messages
 - Gamma Correction
 
 ### Development Setup
