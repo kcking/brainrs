@@ -93,7 +93,7 @@ fn led_write_task(
     let mut ws2812 = Ws2812Esp32Rmt::new(rmt, data_gpio).unwrap();
     // reset to black at start
     ws2812
-        .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
+        .write_nocopy(vec![RGB8::new(0, 0, 0); MAX_LEDS].iter().cloned())
         .unwrap();
 
     let mut frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
@@ -392,6 +392,11 @@ impl LedState {
             } else {
                 // Not a continuation. Regardless of whether this is a network
                 // error or we actually finished the last message, reset state.
+                log::warn!(
+                    "noncontiguous frame received, resetting {:?} {:?}",
+                    &self.last_header,
+                    &header
+                );
                 self.reset();
                 return OnMessageResult {
                     pong_data: pong_data,
