@@ -10,6 +10,8 @@
 
 use std::io::{Read, Write};
 
+use embedded_io::ErrorType;
+
 #[repr(u8)]
 pub enum PixelShaderEncoding {
     DirectArgb = 0,
@@ -40,6 +42,7 @@ pub struct Header {
 }
 
 pub const FRAGMENT_MAX: usize = 1500;
+pub const PONG_DATA_MAX: usize = 16;
 pub const HEADER_SIZE: usize = 12;
 
 impl Header {
@@ -85,6 +88,17 @@ pub fn prepend_header(msg_id: i16, mut payload: Vec<u8>) -> Vec<u8> {
     payload
 }
 
+pub fn prepend_header_heapless(
+    msg_id: i16,
+    payload: heapless::Vec<u8, FRAGMENT_MAX>,
+) -> heapless::Vec<u8, FRAGMENT_MAX> {
+    let header = Header::from_payload(msg_id, &payload);
+    let mut out = heapless::Vec::new();
+    out.extend_from_slice(&header.to_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
 pub struct BrainHello {
     pub brain_id: String,
     pub panel_name: Option<String>,
@@ -104,10 +118,24 @@ impl BrainHello {
 
         w
     }
+
+    pub fn to_heapless(&self) -> heapless::Vec<u8, FRAGMENT_MAX> {
+        let mut w = VecWriter {
+            buffer: heapless::Vec::new(),
+        };
+
+        w.write_all(&[MessageType::BrainHello as u8]).unwrap();
+        write_str(&mut w, &self.brain_id);
+        write_str_opt(&mut w, self.panel_name.as_deref());
+        write_str_opt(&mut w, self.firmware_version.as_deref());
+        write_str_opt(&mut w, self.idf_version.as_deref());
+
+        w.buffer
+    }
 }
 
 pub struct Ping {
-    pub data: Vec<u8>,
+    pub data: heapless::Vec<u8, 16>,
     pub is_pong: bool,
 }
 
@@ -118,6 +146,47 @@ impl Ping {
         write_bool(&mut w, self.is_pong);
         write_bytes(&mut w, &self.data);
         w
+    }
+
+    pub fn to_heapless(&self) -> heapless::Vec<u8, 32> {
+        let mut w = VecWriter::<32> {
+            buffer: heapless::Vec::new(),
+        };
+        w.write_all(&[MessageType::Ping as u8]).unwrap();
+        write_bool(&mut w, self.is_pong);
+        write_bytes(&mut w, &self.data);
+        w.buffer
+    }
+}
+
+#[derive(Default)]
+pub struct VecWriter<const N: usize> {
+    pub buffer: heapless::Vec<u8, N>,
+}
+
+impl<const N: usize> VecWriter<N> {
+    pub fn new() -> Self {
+        Self {
+            buffer: heapless::Vec::new(),
+        }
+    }
+}
+
+impl<const N: usize> ErrorType for VecWriter<N> {
+    type Error = embedded_io::ErrorKind;
+}
+impl<const N: usize> Write for VecWriter<N> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        let available_space = self.buffer.capacity() - self.buffer.len();
+        let write_len = buf.len().min(available_space);
+        self.buffer
+            .extend_from_slice(&buf[..write_len])
+            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        Ok(write_len)
+    }
+
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
     }
 }
 
@@ -200,12 +269,13 @@ pub enum Encoding {
     }
 */
 
-pub fn create_hello_msg(msg_id: i16, brain_id: &str) -> Vec<u8> {
-    let mut out = vec![];
+pub fn create_hello_msg(msg_id: i16, brain_id: &str) -> heapless::Vec<u8, FRAGMENT_MAX> {
+    let mut out = VecWriter::new();
     write_hello_msg(&mut out, brain_id);
-    let hdr = Header::from_payload(msg_id, &out);
-    out.splice(0..0, hdr.to_bytes());
-    out
+
+    out.buffer = prepend_header_heapless(msg_id, out.buffer);
+
+    out.buffer
 }
 
 pub fn write_hello_msg(w: &mut impl Write, brain_id: &str) {

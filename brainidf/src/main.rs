@@ -6,6 +6,7 @@ pub mod proto;
 use std::{
     io::Write,
     net::{Ipv4Addr, UdpSocket},
+    sync::Mutex,
     time::Instant,
 };
 
@@ -39,7 +40,10 @@ use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_eth},
-    proto::{BrainHello, Header, MessageType, Ping, create_hello_msg, prepend_header},
+    proto::{
+        BrainHello, FRAGMENT_MAX, Header, MessageType, PONG_DATA_MAX, Ping, create_hello_msg,
+        prepend_header, prepend_header_heapless,
+    },
 };
 
 #[cfg(feature = "wifi")]
@@ -55,8 +59,8 @@ const LED_CH1_GPIO: u8 = 32;
 const LED_CH2_GPIO: u8 = 2;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
-// A `Signal` ensures only one copy of the LEDs is in flight at a time.
-static LED_FRAME_SIGNAL: Signal<CriticalSectionRawMutex, Vec<RGB8>> = Signal::new();
+
+static LED_MUTEX: Mutex<Vec<RGB8>> = Mutex::new(Vec::new());
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -65,6 +69,7 @@ fn main() {
 
     ThreadSpawnConfiguration {
         pin_to_core: Some(Core::Core0),
+        // stack_size: 32000,
         ..ThreadSpawnConfiguration::default()
     }
     .set();
@@ -91,12 +96,18 @@ fn led_write_task(
         .write_nocopy(vec![RGB8::new(0, 0, 0)].iter().cloned())
         .unwrap();
 
-    let frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
+    let mut frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
+    let mut leds = vec![];
+
     loop {
-        let data = block_on(LED_FRAME_SIGNAL.wait());
-        // ws2812.write_nocopy(data).unwrap();
+        block_on(frame_ticker.next());
+        {
+            let data = LED_MUTEX.lock().unwrap();
+            leds.resize(data.len(), Default::default());
+            leds.copy_from_slice(data.as_slice());
+        }
         trace!("got led frame");
-        let dithered = data.iter().enumerate().map(|(pixel_idx, rgb)| {
+        let dithered = leds.iter().enumerate().map(|(pixel_idx, rgb)| {
             RGB8::new(
                 dithering::correct_22(rgb.r, frame_number as u32, pixel_idx as u32),
                 dithering::correct_22(rgb.g, frame_number as u32, pixel_idx as u32),
@@ -201,14 +212,27 @@ async fn main_task() {
                         OnMessageAction::WriteLeds => {
                             let leds = led_state.get_leds();
                             trace!("sent led frame");
-                            LED_FRAME_SIGNAL.signal(leds);
+                            {
+                                let mut locked_leds = LED_MUTEX.lock().unwrap();
+                                locked_leds.clear();
+                                locked_leds.extend_from_slice(&leds);
+                            }
+
                             if let Some(next_pong_data) = next_pong_data.take() {
                                 info!("sending pong");
                                 let msg = Ping {
                                     data: next_pong_data,
                                     is_pong: true,
                                 };
-                                let msg = prepend_header(msg_id, msg.to_vec());
+                                let Ok(msg_heapless) =
+                                    heapless::Vec::<u8, FRAGMENT_MAX>::from_slice(
+                                        &msg.to_heapless(),
+                                    )
+                                else {
+                                    error!("message copy failed");
+                                    continue;
+                                };
+                                let msg = prepend_header_heapless(msg_id, msg_heapless);
                                 msg_id = msg_id.wrapping_add_unsigned(1);
                                 udp_sock.send_to(&msg, from).await;
                             }
@@ -245,7 +269,7 @@ async fn main_task() {
 }
 
 struct OnMessageResult {
-    pub pong_data: Option<Vec<u8>>,
+    pub pong_data: Option<heapless::Vec<u8, PONG_DATA_MAX>>,
     pub action: OnMessageAction,
 }
 enum OnMessageAction {
@@ -274,14 +298,13 @@ impl LedState {
             palette: None,
         }
     }
-    pub fn get_leds(&self) -> Vec<RGB8> {
-        let pixels = self.leds.as_slice().as_pixels();
+    pub fn get_leds(&self) -> &[RGB8] {
+        let pixels = self.leds.as_pixels();
         if let Some(pixel_count) = self.pixel_count {
             &pixels[..pixel_count.min(pixels.len())]
         } else {
             pixels
         }
-        .into()
     }
     // Returns: whether caller should write LED data out to RMT
     pub fn on_message(&mut self, header: Header, mut rx_packet: &[u8]) -> OnMessageResult {
@@ -318,7 +341,13 @@ impl LedState {
                 let pong_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
                 rx_packet = &rx_packet[4..];
                 info!("got pong data");
-                pong_data = Some(rx_packet[..pong_len as usize].into());
+                if let Ok(pong_data_buf) =
+                    heapless::Vec::from_slice(&rx_packet[..pong_len as usize])
+                {
+                    pong_data = Some(pong_data_buf);
+                } else {
+                    error!("Pong data of length {pong_len} too long, max is {PONG_DATA_MAX}");
+                }
                 rx_packet = &rx_packet[pong_len as usize..];
             }
             let desc_len = i32::from_be_bytes(rx_packet[..4].try_into().unwrap());
@@ -373,6 +402,7 @@ impl LedState {
 
         let offset = self.last_led_byte_idx.unwrap_or(0);
         if let Some(ref palette) = self.palette {
+            // TODO: handle out of bounds inputs (more pixels than we store)
             // NOTE: only 2 palette supported
             for (i, b) in rx_packet.iter().enumerate() {
                 for bit in 0..8 {
@@ -388,10 +418,20 @@ impl LedState {
                     }
                 }
             }
+
+            self.last_led_byte_idx = Some(offset + rx_packet.len());
         } else {
-            self.leds.as_mut_slice()[offset..offset + rx_packet.len()].copy_from_slice(rx_packet);
+            // dbg!(offset, rx_packet.len(), self.leds.len());
+            let leds_to_copy = if offset + rx_packet.len() >= self.leds.len() {
+                self.leds.len().saturating_sub(offset)
+            } else {
+                rx_packet.len()
+            };
+            self.leds.as_mut_slice()[offset..offset + leds_to_copy]
+                .copy_from_slice(&rx_packet[..leds_to_copy]);
+
+            self.last_led_byte_idx = Some(offset + leds_to_copy);
         }
-        self.last_led_byte_idx = Some(offset + rx_packet.len());
 
         let ready_to_write = header.frame_offset + header.frame_size as i32 == header.msg_size;
         self.last_header = Some(header);
