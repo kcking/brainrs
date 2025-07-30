@@ -25,6 +25,10 @@ CONFIG_SPI_MASTER_ISR_IN_IRAM=n
 
 CONFIG_ESP_WIFI_TASK_CORE_ID=0
 
+# Disable watchdog on Core1, the led DMA task, as petting it does not work for
+# some reason...
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n 
+
 # some ideas from chatgpt, but didnt necessarily help in some testing
 # CONFIG_ESP_MAIN_TASK_AFFINITY=CPU0
 # 

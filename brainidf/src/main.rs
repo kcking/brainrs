@@ -10,22 +10,27 @@ use std::{
     time::Instant,
 };
 
+use smart_leds::SmartLedsWrite;
+
 use async_io::Async;
 use embassy_executor::{Executor, Spawner};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Delay, Duration, Timer};
 
 use embedded_hal_async::delay::DelayNs as _;
+use esp_idf_svc::hal::task::watchdog::{TWDTConfig, TWDTDriver};
 use esp_idf_svc::{
     eth::{AsyncEth, EspEth, EthDriver, RmiiEth},
     eventloop::EspSystemEventLoop,
     hal::{
         cpu::Core,
-        gpio::{self, OutputPin},
+        gpio::{self, Gpio0, OutputPin},
         peripheral::Peripheral,
         prelude::Peripherals,
         rmt::RmtChannel,
-        task::{block_on, thread::ThreadSpawnConfiguration},
+        spi::{Dma, Spi, SpiAnyPins, SpiBusDriver, SpiConfig, SpiDriver, SpiDriverConfig},
+        task::{block_on, thread::ThreadSpawnConfiguration, watchdog::TWDT, yield_now},
+        units::Hertz,
     },
     nvs::EspDefaultNvsPartition,
     sys::{ESP_TASK_PRIO_MAX, esp_mac_type_t_ESP_MAC_WIFI_STA, esp_read_mac},
@@ -36,7 +41,6 @@ use log::{error, info, trace};
 use rgb::AsPixels;
 use smart_leds::RGB8;
 use static_cell::StaticCell;
-use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_eth},
@@ -86,21 +90,32 @@ fn main() {
 fn led_write_task(
     data_gpio: impl Peripheral<P = impl OutputPin>,
     rmt: impl Peripheral<P = impl RmtChannel>,
+    spi: impl Peripheral<P = impl SpiAnyPins>,
+    task_watchdog_timer: impl Peripheral<P = TWDT>,
 ) {
+    // SPI/DMA Config
+    let config =
+        SpiDriverConfig::new().dma(esp_idf_svc::hal::spi::Dma::Channel1(MAX_LEDS * 3 + 64));
+    let spi_driver = SpiDriver::new_without_sclk(
+        spi,
+        data_gpio,
+        None::<esp_idf_svc::hal::gpio::Gpio0>,
+        &config,
+    )
+    .unwrap();
+    let spi_config = SpiConfig::new().write_only(true).baudrate(Hertz(3_000_000));
+    let spi_driver = SpiBusDriver::new(spi_driver, &spi_config).unwrap();
     let max_framerate = 60;
     let mut frame_number = 0u64;
-
-    let mut ws2812 = Ws2812Esp32Rmt::new(rmt, data_gpio).unwrap();
-    // reset to black at start
-    ws2812
-        .write_nocopy(vec![RGB8::new(0, 0, 0); MAX_LEDS].iter().cloned())
-        .unwrap();
+    let mut dma_buf = vec![0u8; MAX_LEDS * 12 + 120];
+    let mut ws_driver = ws2812_spi::prerendered::Ws2812::new(spi_driver, &mut dma_buf);
 
     let mut frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
     let mut leds = vec![];
 
     loop {
         block_on(frame_ticker.next());
+
         {
             let data = LED_MUTEX.lock().unwrap();
             leds.resize(data.len(), Default::default());
@@ -108,13 +123,14 @@ fn led_write_task(
         }
         trace!("got led frame");
         let dithered = leds.iter().enumerate().map(|(pixel_idx, rgb)| {
+            // FLIP R and G for the spi driver
             RGB8::new(
-                dithering::correct_22(rgb.r, frame_number as u32, pixel_idx as u32),
                 dithering::correct_22(rgb.g, frame_number as u32, pixel_idx as u32),
+                dithering::correct_22(rgb.r, frame_number as u32, pixel_idx as u32),
                 dithering::correct_22(rgb.b, frame_number as u32, pixel_idx as u32),
             )
         });
-        ws2812.write_nocopy(dithered).unwrap();
+        ws_driver.write(dithered).unwrap();
 
         frame_number += 1;
     }
@@ -136,7 +152,9 @@ async fn main_task() {
         ..ThreadSpawnConfiguration::default()
     }
     .set();
-    std::thread::spawn(move || led_write_task(led_pin, channel));
+    std::thread::spawn(move || {
+        led_write_task(led_pin, channel, peripherals.spi2, peripherals.twdt)
+    });
     ThreadSpawnConfiguration::default().set();
     let mut led_state = LedState::new(MAX_LEDS);
 
