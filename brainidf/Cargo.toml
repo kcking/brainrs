@@ -10,7 +10,9 @@ name = "brainidf"
 harness = false # do not use the built in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
-# opt-level = "s"
+opt-level      = 3        # maximum runtime optimisation
+lto            = "fat"    # whole-program link-time optimisation
+codegen-units  = 1        # let LLVM reason about the whole crate
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash
