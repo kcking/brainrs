@@ -24,3 +24,20 @@ CONFIG_ETH_DMA_TX_BUFFER_NUM=10
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n
 
 CONFIG_ESP_WIFI_TASK_CORE_ID=0
+
+# some ideas from chatgpt, but didnt necessarily help in some testing
+# CONFIG_ESP_MAIN_TASK_AFFINITY=CPU0
+# 
+# 
+# CONFIG_RMT_TX_ISR_CACHE_SAFE=y      # ⇢ “Allow RMT TX ISR to execute when cache is disabled”  [oai_citation:1‡docs.espressif.com](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/kconfig-reference.html?utm_source=chatgpt.com)
+# 
+# CONFIG_PM_ENABLE=n          # keep APB & CPU clocks fixed while LEDs stream
+# CONFIG_BT_ENABLED=n
+# CONFIG_BLUEDROID_ENABLED=n
+# CONFIG_ESP_WIFI_ENABLED=n 
+# 
+# 
+# # --- RMT jitter hardening ---------------------------------
+# CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=y
+# CONFIG_RMT_ENCODER_FUNC_IN_IRAM=y
+# CONFIG_RMT_TX_ISR_CACHE_SAFE=y
