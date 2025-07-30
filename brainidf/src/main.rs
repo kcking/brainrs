@@ -410,7 +410,7 @@ impl LedState {
             } else {
                 // Not a continuation. Regardless of whether this is a network
                 // error or we actually finished the last message, reset state.
-                log::warn!(
+                log::debug!(
                     "noncontiguous frame received, resetting {:?} {:?}",
                     &self.last_header,
                     &header
