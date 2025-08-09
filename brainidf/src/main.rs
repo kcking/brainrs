@@ -262,6 +262,9 @@ async fn main_task() {
                             // NOTE: broadcast didn't work here
                             let _ = udp_sock.send_to(&msg, from).await;
                         }
+                        OnMessageAction::DownloadFirmware(url) => {
+                            info!("<- Download Firmware {url}");
+                        }
                     }
                 }
                 Ok(Err(e)) => {
@@ -294,6 +297,7 @@ enum OnMessageAction {
     Nothing,
     WriteLeds,
     SendBrainHello,
+    DownloadFirmware(heapless::String<512>),
 }
 
 /// State machine to handle message unframing. Maintains the current state of
@@ -339,6 +343,23 @@ impl LedState {
                     pong_data: pong_data,
                     action: OnMessageAction::SendBrainHello,
                 };
+            }
+            if msg_type == MessageType::UseFirmware as u8 {
+                match proto::UseFirmware::parse(rx_packet) {
+                    Ok(use_firmware) => {
+                        return OnMessageResult {
+                            action: OnMessageAction::DownloadFirmware(use_firmware.url),
+                            pong_data: None,
+                        };
+                    }
+                    Err(e) => {
+                        error!("Failed to parse UseFirmware message {e:?}");
+                        return OnMessageResult {
+                            action: OnMessageAction::Nothing,
+                            pong_data: None,
+                        };
+                    }
+                }
             }
             if msg_type != MessageType::BrainPanelShade as u8 {
                 info!("got unsupported message type {msg_type}");

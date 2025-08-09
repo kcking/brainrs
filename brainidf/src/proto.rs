@@ -8,9 +8,9 @@
     };
 */
 
-use std::io::{Read, Write};
+use std::io::Write;
 
-use embedded_io::ErrorType;
+use embedded_io::{ErrorType, Read};
 
 #[repr(u8)]
 pub enum PixelShaderEncoding {
@@ -205,6 +205,37 @@ pub enum Encoding {
     Indexed2,
     Indexed4,
     Indexed16,
+}
+
+pub struct UseFirmware {
+    pub url: heapless::String<512>,
+}
+
+impl UseFirmware {
+    pub fn parse(buf: impl Read) -> std::io::Result<Self> {
+        Ok(Self {
+            url: read_string(buf)?,
+        })
+    }
+}
+
+fn read_string<const N: usize>(mut buf: impl Read) -> Result<heapless::String<N>, std::io::Error> {
+    let mut out = heapless::Vec::<u8, N>::new();
+    let len = read_size(&mut buf)?;
+    out.resize_default(len as usize)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "string to big"))?;
+    buf.read_exact(out.as_mut_slice())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "read string failed"));
+
+    heapless::String::from_utf8(out)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "invalid utf8"))
+}
+
+fn read_size(mut buf: impl Read) -> std::io::Result<u32> {
+    let mut bytes = [0u8; size_of::<u32>()];
+    buf.read_exact(&mut bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "read size failed"));
+    Ok(u32::from_be_bytes(bytes))
 }
 
 /*
