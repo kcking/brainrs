@@ -36,10 +36,6 @@ cp target/xtensa-esp32-espidf/release/brainidf.bin ~/sparklemotion/fw/rust-${COU
 # Restart sparklemotion so it is discovered
 ```
 
-## TODO
-
-- OTA firmware updates
-
 ### Development Setup
 
 ```bash
