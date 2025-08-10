@@ -1,6 +1,7 @@
 #![allow(unused)]
 pub mod dithering;
 pub mod network_interfaces;
+pub mod ota;
 pub mod proto;
 
 use std::{
@@ -264,6 +265,14 @@ async fn main_task() {
                         }
                         OnMessageAction::DownloadFirmware(url) => {
                             info!("<- Download Firmware {url}");
+                            match ota::update_firmware(&url) {
+                                Ok(_) => {
+                                    info!("Firmware update completed!");
+                                }
+                                Err(e) => {
+                                    error!("Firmware update failed {e:?}");
+                                }
+                            }
                         }
                     }
                 }
