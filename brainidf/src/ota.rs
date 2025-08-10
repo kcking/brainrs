@@ -1,7 +1,7 @@
 use crate::*;
 
-static hash: &str = env!("GIT_COMMIT_HASH");
-static count_repo: &str = env!("GIT_COMMIT_COUNT");
+static GIT_HASH: &str = env!("GIT_COMMIT_HASH");
+static GIT_COMMIT_COUNT: &str = env!("GIT_COMMIT_COUNT");
 
 use anyhow::Context;
 use esp_idf_svc::{
@@ -113,9 +113,9 @@ pub fn running_sparklemotion_version() -> Option<heapless::String<32>> {
 
     let mut out = heapless::String::new();
     out.push_str("rust-").ok()?;
-    out.push_str(count_repo).ok()?;
+    out.push_str(GIT_COMMIT_COUNT).ok()?;
     out.push_str("-").ok()?;
-    out.push_str(hash).ok()?;
+    out.push_str(GIT_HASH).ok()?;
 
     Some(out)
 }
