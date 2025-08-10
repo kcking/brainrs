@@ -48,6 +48,7 @@ fn update_firmware_with_client<const N: usize>(
             Err(err) => {
                 error!("Update failed: {err}");
                 update.abort().context("failed to abort update")?;
+                anyhow::bail!("Update failed: {err}, aborted");
             }
         };
     } else {

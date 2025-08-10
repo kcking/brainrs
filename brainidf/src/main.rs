@@ -269,12 +269,19 @@ async fn main_task() {
                         }
                         OnMessageAction::DownloadFirmware(url) => {
                             info!("<- Download Firmware {url}");
-                            match ota::update_firmware(&url) {
-                                Ok(_) => {
-                                    info!("Firmware update completed!");
-                                }
-                                Err(e) => {
-                                    error!("Firmware update failed {e:?}");
+                            let mut tries = 0;
+                            while tries < 5 {
+                                tries += 1;
+                                match ota::update_firmware(&url) {
+                                    Ok(_) => {
+                                        info!("Firmware update completed!");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!("Firmware update failed {e:?}");
+                                        Delay.delay_ms(2000).await;
+                                        info!("Retrying firmware update");
+                                    }
                                 }
                             }
                         }
