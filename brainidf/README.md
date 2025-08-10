@@ -55,7 +55,8 @@ cargo run --release
 ### WiFi Build
 
 ```
-# Set SSID/PASSWORD in your environment vars somehow
+# Edit partitions.csv to make all app partitions 2MB so the binary fits.
+# Set SSID/PASSWORD to your wifi credentials in environment vars.
 cargo run --release --no-default-features -F wifi
 ```
 
