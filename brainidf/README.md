@@ -25,6 +25,8 @@ This version of the brain only supports ESP32 as it requires RMII for Ethernet.
 ```
 # Build for ethernet (default features)
 cargo build --release
+# Or WiFi (uncomment)
+# cargo build --release --no-default-features -F wifi
 # Create image
 espflash save-image --chip esp32 target/xtensa-esp32-espidf/release/brainidf target/xtensa-esp32-espidf/release/brainidf.bin
 # Copy to sparklemotion serving directory
