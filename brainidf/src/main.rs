@@ -97,7 +97,7 @@ fn led_write_task(
     task_watchdog_timer: impl Peripheral<P = TWDT>,
 ) {
     // SPI/DMA Config
-    const ENCODED_LEN: usize = MAX_LEDS * 12 + 120;
+    const ENCODED_LEN: usize = MAX_LEDS * 12 + 64 * 12;
     let config = SpiDriverConfig::new().dma(esp_idf_svc::hal::spi::Dma::Channel1(ENCODED_LEN));
     let spi_driver = SpiDriver::new_without_sclk(
         spi,
@@ -115,6 +115,9 @@ fn led_write_task(
 
     let mut frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
     let mut leds = vec![];
+
+    // Initialize to black
+    ws_driver.write(std::iter::repeat_n(RGB8::new(0, 0, 0), MAX_LEDS));
 
     loop {
         block_on(frame_ticker.next());
@@ -268,6 +271,10 @@ async fn main_task() {
                             let _ = udp_sock.send_to(&msg, from).await;
                         }
                         OnMessageAction::DownloadFirmware(url) => {
+                            if option_env!("NO_OTA").is_some() {
+                                info!("Ignoring OTA message");
+                                continue;
+                            }
                             info!("<- Download Firmware {url}");
                             let mut tries = 0;
                             while tries < 5 {
