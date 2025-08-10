@@ -5,6 +5,7 @@ pub mod ota;
 pub mod proto;
 
 use std::{
+    f64::MAX,
     io::Write,
     net::{Ipv4Addr, UdpSocket},
     sync::Mutex,
@@ -96,8 +97,8 @@ fn led_write_task(
     task_watchdog_timer: impl Peripheral<P = TWDT>,
 ) {
     // SPI/DMA Config
-    let config =
-        SpiDriverConfig::new().dma(esp_idf_svc::hal::spi::Dma::Channel1(MAX_LEDS * 3 + 64));
+    const ENCODED_LEN: usize = MAX_LEDS * 12 + 120;
+    let config = SpiDriverConfig::new().dma(esp_idf_svc::hal::spi::Dma::Channel1(ENCODED_LEN));
     let spi_driver = SpiDriver::new_without_sclk(
         spi,
         data_gpio,
@@ -109,7 +110,7 @@ fn led_write_task(
     let spi_driver = SpiBusDriver::new(spi_driver, &spi_config).unwrap();
     let max_framerate = 60;
     let mut frame_number = 0u64;
-    let mut dma_buf = vec![0u8; MAX_LEDS * 12 + 120];
+    let mut dma_buf = vec![0u8; ENCODED_LEN];
     let mut ws_driver = ws2812_spi::prerendered::Ws2812::new(spi_driver, &mut dma_buf);
 
     let mut frame_ticker = embassy_time::Ticker::every(Duration::from_hz(max_framerate));
