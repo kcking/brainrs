@@ -118,7 +118,6 @@ fn led_write_task(
 
     loop {
         block_on(frame_ticker.next());
-
         {
             let data = LED_MUTEX.lock().unwrap();
             leds.resize(data.len(), Default::default());
