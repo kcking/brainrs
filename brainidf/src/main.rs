@@ -45,7 +45,7 @@ use static_cell::StaticCell;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_eth},
-    ota::running_esp_app_version,
+    ota::{running_esp_app_version, running_sparklemotion_version},
     proto::{
         BrainHello, FRAGMENT_MAX, Header, MessageType, PONG_DATA_MAX, Ping, create_hello_msg,
         prepend_header, prepend_header_heapless,
@@ -197,7 +197,7 @@ async fn main_task() {
 
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
-        info!("Running version {:?}", running_esp_app_version());
+        info!("Running version {:?}", running_sparklemotion_version());
         let firmware_version = ota::running_sparklemotion_version();
         let hello_msg = create_hello_msg(msg_id, &brain_id, firmware_version.as_deref());
         msg_id = msg_id.wrapping_add_unsigned(1);
