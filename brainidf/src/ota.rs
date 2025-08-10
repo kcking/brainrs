@@ -1,5 +1,8 @@
 use crate::*;
 
+static hash: &str = env!("GIT_COMMIT_HASH");
+static count_repo: &str = env!("GIT_COMMIT_COUNT");
+
 use anyhow::Context;
 use esp_idf_svc::{
     http::{
@@ -92,4 +95,26 @@ fn read_firmware_info(
             return Ok(update_info);
         }
     }
+}
+
+use core::ffi::CStr;
+
+pub fn running_esp_app_version() -> Option<&'static str> {
+    let cstr = unsafe {
+        let desc = esp_idf_svc::hal::sys::esp_app_get_description();
+        CStr::from_ptr((*desc).version.as_ptr())
+    };
+    cstr.to_str().ok()
+}
+
+pub fn running_sparklemotion_version() -> Option<heapless::String<32>> {
+    let esp_ver = running_esp_app_version()?;
+
+    let mut out = heapless::String::new();
+    out.push_str("rust-").ok()?;
+    out.push_str(count_repo).ok()?;
+    out.push_str("-").ok()?;
+    out.push_str(hash).ok()?;
+
+    Some(out)
 }

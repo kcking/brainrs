@@ -4,7 +4,7 @@ target = "xtensa-esp32-espidf"
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
-runner = "espflash flash --partition-table partitions.csv --monitor"
+runner = "espflash flash --partition-table partitions.csv --monitor --erase-parts otadata"
 rustflags = ["--cfg", "espidf_time64"]
 
 [unstable]

@@ -300,16 +300,20 @@ fn read_size(mut buf: impl Read) -> std::io::Result<u32> {
     }
 */
 
-pub fn create_hello_msg(msg_id: i16, brain_id: &str) -> heapless::Vec<u8, FRAGMENT_MAX> {
+pub fn create_hello_msg(
+    msg_id: i16,
+    brain_id: &str,
+    firmware_version: Option<&str>,
+) -> heapless::Vec<u8, FRAGMENT_MAX> {
     let mut out = VecWriter::new();
-    write_hello_msg(&mut out, brain_id);
+    write_hello_msg(&mut out, brain_id, firmware_version);
 
     out.buffer = prepend_header_heapless(msg_id, out.buffer);
 
     out.buffer
 }
 
-pub fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
+pub fn write_hello_msg(w: &mut impl Write, brain_id: &str, version: Option<&str>) {
     /*
             writeByte(BRAIN_HELLO);
             writeString(brainId);
@@ -320,7 +324,7 @@ pub fn write_hello_msg(w: &mut impl Write, brain_id: &str) {
     w.write_all(&[MessageType::BrainHello as u8]).unwrap();
     write_str(w, brain_id);
     write_str_opt(w, None);
-    write_str_opt(w, None);
+    write_str_opt(w, version);
     write_str_opt(w, None);
 }
 

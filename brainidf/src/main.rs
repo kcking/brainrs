@@ -45,6 +45,7 @@ use static_cell::StaticCell;
 
 use crate::{
     network_interfaces::{NetworkInterface, connect_eth},
+    ota::running_esp_app_version,
     proto::{
         BrainHello, FRAGMENT_MAX, Header, MessageType, PONG_DATA_MAX, Ping, create_hello_msg,
         prepend_header, prepend_header_heapless,
@@ -196,7 +197,9 @@ async fn main_task() {
 
         let brain_id = format!("{:02X}{:02X}{:02X}", mac[3], mac[4], mac[5]);
 
-        let hello_msg = create_hello_msg(msg_id, &brain_id);
+        info!("Running version {:?}", running_esp_app_version());
+        let firmware_version = ota::running_sparklemotion_version();
+        let hello_msg = create_hello_msg(msg_id, &brain_id, firmware_version.as_deref());
         msg_id = msg_id.wrapping_add_unsigned(1);
 
         info!("hello_msg {:x?}", &hello_msg);
@@ -257,7 +260,8 @@ async fn main_task() {
                             }
                         }
                         OnMessageAction::SendBrainHello => {
-                            let msg = create_hello_msg(msg_id, &brain_id);
+                            let msg =
+                                create_hello_msg(msg_id, &brain_id, firmware_version.as_deref());
                             msg_id = msg_id.wrapping_add_unsigned(1);
                             // TODO: log error
                             // NOTE: broadcast didn't work here
@@ -282,7 +286,8 @@ async fn main_task() {
                 }
                 Err(_) => {
                     info!("Haven't heard from pinky in {pinky_liveness_ttl:?}, sending hello");
-                    let hello_msg = create_hello_msg(msg_id, &brain_id);
+                    let hello_msg =
+                        create_hello_msg(msg_id, &brain_id, firmware_version.as_deref());
                     msg_id = msg_id.wrapping_add_unsigned(1);
                     udp_sock
                         .send_to(&hello_msg, (bcast_addr, PINKY_PORT))

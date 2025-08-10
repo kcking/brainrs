@@ -28,7 +28,9 @@ cargo build --release
 # Create image
 espflash save-image --chip esp32 target/xtensa-esp32-espidf/release/brainidf target/xtensa-esp32-espidf/release/brainidf.bin
 # Copy to sparklemotion serving directory
-cp target/xtensa-esp32-espidf/release/brainidf.bin ~/sparklemotion/fw/rust-1-release.bin
+VER=`git describe --always --tags`
+COUNT=`git rev-list --count HEAD`
+cp target/xtensa-esp32-espidf/release/brainidf.bin ~/sparklemotion/fw/rust-${COUNT}-${VER}.bin
 # Restart sparklemotion so it is discovered
 ```
 
@@ -46,6 +48,13 @@ cargo install --locked espup espflash cargo-espflash && espup install -v 1.88.0 
 
 ```
 cargo run --release
+```
+
+### WiFi Build
+
+```
+# Set SSID/PASSWORD in your environment vars somehow
+cargo run --release --no-default-features -F wifi
 ```
 
 ### IDE Support
