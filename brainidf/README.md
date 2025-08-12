@@ -61,3 +61,11 @@ cargo run --release --no-default-features -F wifi
 I recommend using VSCode to develop. First open a terminal and export the esp
 env vars with `. ~/export-esp.sh`, then run `code .` in the same terminal so it
 inherits the configuration.
+
+### Manually Flashing a Bin
+
+```
+# cargo install espflash --locked
+# Write bin to factory partition
+espflash write-bin 0x010000 mybin.bin --list-all-ports -B 500000
+```
