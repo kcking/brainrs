@@ -37,9 +37,13 @@ cp target/xtensa-esp32-espidf/release/brainidf.bin ~/sparklemotion/fw/rust-${COU
 ```
 
 ### Development Setup
-
-```bash
-cargo install --locked espup espflash cargo-espflash && espup install -v 1.88.0 && . ~/export-esp.sh
+```
+# Install rustup from [https://rustup.rs](rustup.rs), proceed with default installation.
+# Open a new terminal
+# Add rust-src component
+rustup component add rust-src --toolchain stable
+# Install tooling
+cargo install --locked espup ldproxy espflash cargo-espflash && espup install -v 1.88.0 && . ~/export-esp.sh
 ```
 
 ### Run
