@@ -483,7 +483,7 @@ impl LedState {
                         continue;
                     }
                     let pixel = &mut self.leds[led_index * 3..(led_index + 1) * 3];
-                    if (1 << (8 - bit)) & b == 0 {
+                    if (1 << (8 - bit - 1)) & b == 0 {
                         pixel.copy_from_slice(&palette[1..4]);
                     } else {
                         pixel.copy_from_slice(&palette[5..8]);
