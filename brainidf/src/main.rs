@@ -117,7 +117,7 @@ fn led_write_task(
     let mut leds = vec![];
 
     // Initialize to black
-    ws_driver.write(std::iter::repeat_n(RGB8::new(0, 0, 0), MAX_LEDS));
+    ws_driver.write(std::iter::repeat_n(RGB8::new(255, 255, 255), MAX_LEDS));
 
     loop {
         block_on(frame_ticker.next());
